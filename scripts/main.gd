@@ -136,6 +136,7 @@ func _make_actor(room: Vector2i, pos: Vector2, dir: String) -> Dictionary:
 		"facing": _direction_vector(dir),
 		"impact_visual_offset": Vector2.ZERO,
 		"hp": 2,
+		"moving": false,
 	}
 
 
@@ -163,6 +164,8 @@ func _physics_process(delta: float) -> void:
 			_add_noise("thief", "肚子叫")
 			_push_log("盗贼的肚子叫了，怪物获得 2 秒方向提示。")
 	if phase != "ready" and phase != "ended":
+		monster["moving"] = false
+		thief["moving"] = false
 		_handle_continuous_input(delta)
 	if world_25d:
 		world_25d.sync(rooms, monster, thief, afterimages, dragging, elapsed < attack_until, elapsed)
@@ -336,8 +339,10 @@ func _generate_rooms() -> Array:
 			if not neighbor["doors"].has(edge["opposite"]):
 				neighbor["doors"].append(edge["opposite"])
 
-	var kinds := ["沙发", "柜子", "桌子"]
+	var kinds := ["床", "衣柜", "书柜", "木桶", "木箱", "花瓶"]
+	var floor_textures := WORLD_25D_SCRIPT.FLOOR_TEXTURES
 	for room in generated:
+		room["floor_texture"] = floor_textures[rng.randi_range(0, floor_textures.size() - 1)]
 		var reserved: Array = []
 		for door in room["doors"]:
 			match door:
@@ -390,8 +395,9 @@ func _generate_rooms() -> Array:
 
 func _furniture_durability(kind: String) -> int:
 	match kind:
-		"沙发": return 2
-		"桌子": return 3
+		"花瓶": return 1
+		"木桶": return 2
+		"床", "木箱": return 3
 		_: return 4
 
 
@@ -585,6 +591,7 @@ func _move_actor_axis(role: String, motion: Vector2) -> void:
 		held["pos"] = next_furniture
 		_record_furniture_strokes(room, held["id"], before, held)
 		actor["pos"] = next_actor
+		actor["moving"] = true
 		_add_noise(role, "拖动家具", actor, 0.42)
 		if role == "thief":
 			_reveal_thief(actor)
@@ -618,6 +625,7 @@ func _move_actor_axis(role: String, motion: Vector2) -> void:
 			return
 	actor["room"] = target_room
 	actor["pos"] = target_pos
+	actor["moving"] = true
 	if role == "monster":
 		_add_noise(role, "怪物脚步", actor, 0.42)
 	else:

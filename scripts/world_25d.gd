@@ -18,6 +18,21 @@ const LAYER_AFTERIMAGE := 8
 const LAYER_MONSTER_EFFECT := 16
 const LAYER_THIEF_WORLD := 32
 
+const FLOOR_TEXTURES := [
+	"res://GJGamejam素材/地板/木色地板2.png",
+	"res://GJGamejam素材/地板/木色地板3.png",
+	"res://GJGamejam素材/地板/纯木色地板.png",
+	"res://GJGamejam素材/地板/像素地板1.png",
+	"res://GJGamejam素材/地板/像素地板2.png",
+	"res://GJGamejam素材/地板/像素地板3.png",
+	"res://GJGamejam素材/地板/像素地板4.png",
+	"res://GJGamejam素材/地板/像素地板5.png",
+	"res://GJGamejam素材/地板/像素地板6.png",
+	"res://GJGamejam素材/地板/像素地板7.png",
+	"res://GJGamejam素材/地板/像素地板8.png",
+	"res://GJGamejam素材/地板/像素地板9.png",
+]
+
 var initialized := false
 var world_root: Node3D
 var level_root: Node3D
@@ -75,8 +90,8 @@ func setup(shared_world: World3D) -> void:
 func _create_materials() -> void:
 	floor_material = _material(Color("#514f45"), 0.96)
 	floor_alt_material = _material(Color("#5a584b"), 0.96)
-	wall_material = _material(Color("#34342f"), 0.92)
-	wall_front_material = _material(Color("#292a27"), 0.95)
+	wall_material = _wall_texture_material()
+	wall_front_material = wall_material
 	dark_material = _material(Color(0.035, 0.035, 0.03, 0.62), 1.0, true)
 	trace_monster_material = _material(Color("#5e2922"), 1.0)
 	trace_thief_material = _material(Color("#245a50"), 1.0)
@@ -90,6 +105,23 @@ func _material(color: Color, roughness: float, transparent := false, unshaded :=
 		material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 	if unshaded:
 		material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	return material
+
+
+func _floor_texture_material(path: String) -> StandardMaterial3D:
+	var material := StandardMaterial3D.new()
+	material.albedo_texture = load(path)
+	material.roughness = 0.92
+	material.uv1_scale = Vector3(1, 1, 1)
+	return material
+
+
+func _wall_texture_material() -> StandardMaterial3D:
+	var material := StandardMaterial3D.new()
+	material.albedo_texture = load("res://GJGamejam素材/墙壁.png")
+	material.roughness = 0.9
+	material.uv1_scale = Vector3(0.3, 0.3, 0.3)
+	material.uv1_triplanar = true
 	return material
 
 
@@ -166,15 +198,29 @@ func rebuild(rooms: Array) -> void:
 func _create_room(room: Dictionary) -> void:
 	var coord: Vector2i = room["coord"]
 	var origin := room_origin(coord)
-	var floor := MeshInstance3D.new()
-	floor.name = "Floor_%d_%d" % [coord.x, coord.y]
-	var floor_mesh := BoxMesh.new()
-	floor_mesh.size = Vector3(ROOM_EXTENT * 2.0, 0.12, ROOM_EXTENT * 2.0)
-	floor.mesh = floor_mesh
-	floor.material_override = floor_material if (coord.x + coord.y) % 2 == 0 else floor_alt_material
-	floor.position = origin + Vector3(0, -0.08, 0)
-	_register_room_visual(coord, floor)
-	level_root.add_child(floor)
+
+	if room.has("floor_texture"):
+		# PlaneMesh with whole texture covering the room — no tiling
+		var floor := MeshInstance3D.new()
+		floor.name = "Floor_%d_%d" % [coord.x, coord.y]
+		var plane_mesh := PlaneMesh.new()
+		plane_mesh.size = Vector2(ROOM_EXTENT * 2.0, ROOM_EXTENT * 2.0)
+		plane_mesh.orientation = PlaneMesh.FACE_Y
+		floor.mesh = plane_mesh
+		floor.material_override = _floor_texture_material(room["floor_texture"])
+		floor.position = origin + Vector3(0, -0.08, 0)
+		_register_room_visual(coord, floor)
+		level_root.add_child(floor)
+	else:
+		var floor := MeshInstance3D.new()
+		floor.name = "Floor_%d_%d" % [coord.x, coord.y]
+		var floor_mesh := BoxMesh.new()
+		floor_mesh.size = Vector3(ROOM_EXTENT * 2.0, 0.12, ROOM_EXTENT * 2.0)
+		floor.mesh = floor_mesh
+		floor.material_override = floor_material if (coord.x + coord.y) % 2 == 0 else floor_alt_material
+		floor.position = origin + Vector3(0, -0.08, 0)
+		_register_room_visual(coord, floor)
+		level_root.add_child(floor)
 
 	var inset := MeshInstance3D.new()
 	var inset_mesh := BoxMesh.new()
@@ -267,8 +313,8 @@ func _create_actor(role: String, layer: int) -> Node3D:
 	world_root.add_child(actor)
 	var shadow := MeshInstance3D.new()
 	var shadow_mesh := CylinderMesh.new()
-	shadow_mesh.top_radius = 0.42
-	shadow_mesh.bottom_radius = 0.42
+	shadow_mesh.top_radius = 0.525
+	shadow_mesh.bottom_radius = 0.525
 	shadow_mesh.height = 0.025
 	shadow.mesh = shadow_mesh
 	shadow.material_override = dark_material
@@ -276,42 +322,61 @@ func _create_actor(role: String, layer: int) -> Node3D:
 	shadow.scale.z = 0.55
 	shadow.layers = layer
 	actor.add_child(shadow)
+	var sway_pivot := Node3D.new()
+	sway_pivot.name = "SwayPivot"
+	actor.add_child(sway_pivot)
+	var outline := Sprite3D.new()
+	outline.name = "OutlineSprite"
+	outline.texture = load("res://GJGamejam素材/人物/怪物.png" if role == "monster" else "res://GJGamejam素材/人物/主角.png")
+	outline.pixel_size = (0.00263 if role == "monster" else 0.00270) * 1.12
+	outline.position.y = 0.84
+	outline.modulate = Color.BLACK
+	outline.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	outline.layers = layer
+	sway_pivot.add_child(outline)
 	var sprite := Sprite3D.new()
 	sprite.name = "PaperSprite"
-	sprite.texture = load("res://assets/25d/monster.svg" if role == "monster" else "res://assets/25d/thief.svg")
-	sprite.pixel_size = 0.0092
+	sprite.texture = load("res://GJGamejam素材/人物/怪物.png" if role == "monster" else "res://GJGamejam素材/人物/主角.png")
+	sprite.pixel_size = 0.00263 if role == "monster" else 0.00270
 	sprite.position.y = 0.86
 	sprite.billboard = BaseMaterial3D.BILLBOARD_ENABLED
-	sprite.no_depth_test = true
 	sprite.layers = layer
-	actor.add_child(sprite)
+	sway_pivot.add_child(sprite)
 	return actor
 
 
 func _create_furniture_node(room: Vector2i, furniture: Dictionary) -> void:
+	var kind: String = furniture["kind"]
+	var info := _furniture_info(kind)
 	var node := Node3D.new()
 	node.name = str(furniture["id"])
 	level_root.add_child(node)
+	var shadow := MeshInstance3D.new()
+	shadow.name = "FurnitureShadow"
+	var shadow_mesh := CylinderMesh.new()
+	shadow_mesh.top_radius = info["shadow_radius"]
+	shadow_mesh.bottom_radius = info["shadow_radius"]
+	shadow_mesh.height = 0.025
+	shadow.mesh = shadow_mesh
+	shadow.material_override = dark_material
+	shadow.position.y = 0.022
+	_register_room_visual(room, shadow)
+	node.add_child(shadow)
 	var base := MeshInstance3D.new()
 	base.name = "Base"
 	var mesh := BoxMesh.new()
-	var kind: String = furniture["kind"]
-	if kind == "沙发":
-		mesh.size = Vector3(1.35, 0.32, 0.72)
-	elif kind == "柜子":
-		mesh.size = Vector3(0.82, 0.72, 0.68)
-	else:
-		mesh.size = Vector3(1.15, 0.38, 0.82)
+	mesh.size = info["size"]
 	base.mesh = mesh
 	base.material_override = _material(Color("#4a4338"), 0.94)
 	base.position.y = mesh.size.y / 2.0
+	base.visible = false
 	_register_room_visual(room, base)
 	node.add_child(base)
 	var selection := MeshInstance3D.new()
 	selection.name = "SelectionRing"
 	var selection_mesh := CylinderMesh.new()
-	selection_mesh.top_radius = 0.78
-	selection_mesh.bottom_radius = 0.78
+	selection_mesh.top_radius = info["sel_radius"]
+	selection_mesh.bottom_radius = info["sel_radius"]
 	selection_mesh.height = 0.022
 	selection.mesh = selection_mesh
 	selection.material_override = _material(Color(1.0, 0.79, 0.18, 0.38), 0.9, true, true)
@@ -319,15 +384,19 @@ func _create_furniture_node(room: Vector2i, furniture: Dictionary) -> void:
 	_register_room_visual(room, selection)
 	selection.visible = false
 	node.add_child(selection)
+	var outline := Sprite3D.new()
+	outline.name = "OutlineSprite"
+	outline.texture = load(info["path"])
+	outline.pixel_size = info["pixel_size"] * 1.12
+	outline.position.y = 0.88
+	outline.modulate = Color.BLACK
+	outline.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	_register_room_visual(room, outline)
+	node.add_child(outline)
 	var sprite := Sprite3D.new()
 	sprite.name = "PaperSprite"
-	var path := "res://assets/25d/sofa.svg"
-	if kind == "柜子":
-		path = "res://assets/25d/cabinet.svg"
-	elif kind == "桌子":
-		path = "res://assets/25d/table.svg"
-	sprite.texture = load(path)
-	sprite.pixel_size = 0.0068
+	sprite.texture = load(info["path"])
+	sprite.pixel_size = info["pixel_size"]
 	sprite.position.y = 0.9
 	sprite.billboard = BaseMaterial3D.BILLBOARD_ENABLED
 	_register_room_visual(room, sprite)
@@ -349,13 +418,24 @@ func _create_furniture_node(room: Vector2i, furniture: Dictionary) -> void:
 	furniture_nodes[furniture["id"]] = node
 
 
+func _furniture_info(kind: String) -> Dictionary:
+	match kind:
+		"床": return {"size": Vector3(1.74, 0.175, 0.87), "path": "res://GJGamejam素材/2.5D物品/ff_bed_clean.png", "pixel_size": 0.03868, "sel_radius": 0.78, "shadow_radius": 0.72}
+		"衣柜": return {"size": Vector3(0.87, 0.425, 0.87), "path": "res://GJGamejam素材/2.5D物品/ff_wardrobe_clean.png", "pixel_size": 0.03868, "sel_radius": 0.78, "shadow_radius": 0.60}
+		"书柜": return {"size": Vector3(1.0, 0.375, 0.87), "path": "res://GJGamejam素材/2.5D物品/ff_bookshelf_clean.png", "pixel_size": 0.03868, "sel_radius": 0.78, "shadow_radius": 0.62}
+		"木桶": return {"size": Vector3(0.5, 0.45, 0.5), "path": "res://GJGamejam素材/2.5D物品/lp_barrel_clean.png", "pixel_size": 0.01112, "sel_radius": 0.42, "shadow_radius": 0.35}
+		"木箱": return {"size": Vector3(0.6, 0.45, 0.6), "path": "res://GJGamejam素材/2.5D物品/lp_crate_clean.png", "pixel_size": 0.01334, "sel_radius": 0.48, "shadow_radius": 0.42}
+		"花瓶": return {"size": Vector3(0.28, 0.42, 0.28), "path": "res://GJGamejam素材/2.5D物品/lp_vase_clean.png", "pixel_size": 0.00622, "sel_radius": 0.28, "shadow_radius": 0.22}
+		_: return {"size": Vector3(0.6, 0.45, 0.6), "path": "res://GJGamejam素材/2.5D物品/lp_crate_clean.png", "pixel_size": 0.01334, "sel_radius": 0.48, "shadow_radius": 0.42}
+
+
 func _create_item_node(room: Vector2i, item: Dictionary) -> void:
 	var node := Node3D.new()
 	node.name = str(item["id"])
 	level_root.add_child(node)
 	var sprite := Sprite3D.new()
-	sprite.texture = load("res://assets/25d/pill.svg" if item["kind"] == "pill" else "res://assets/25d/treasure.svg")
-	sprite.pixel_size = 0.0048 if item["kind"] == "pill" else (0.0046 if item["kind"] == "trinket" else 0.0055)
+	sprite.texture = load("res://assets/25d/pill.svg" if item["kind"] == "pill" else "res://GJGamejam素材/2.5D物品/红宝石.png")
+	sprite.pixel_size = 0.0048 if item["kind"] == "pill" else (0.0084 if item["kind"] == "trinket" else 0.01006)
 	sprite.position.y = 0.42
 	sprite.billboard = BaseMaterial3D.BILLBOARD_ENABLED
 	_register_room_visual(room, sprite)
@@ -455,12 +535,31 @@ func _furniture_content_value(furniture: Dictionary) -> int:
 func _sync_actor(node: Node3D, actor: Dictionary, time: float, is_thief: bool) -> void:
 	var visual_pos: Vector2 = actor["pos"] + actor.get("impact_visual_offset", Vector2.ZERO)
 	node.position = world_position(actor["room"], visual_pos)
-	var sprite: Sprite3D = node.get_node("PaperSprite")
+	var pivot: Node3D = node.get_node_or_null("SwayPivot")
+	if not pivot:
+		return
+	var sprite: Sprite3D = pivot.get_node_or_null("PaperSprite")
+	if not sprite:
+		return
+	var outline: Sprite3D = pivot.get_node_or_null("OutlineSprite")
 	var dir: String = actor["dir"]
 	sprite.flip_h = dir == "left"
+	if outline:
+		outline.flip_h = sprite.flip_h
 	var phase_offset := 1.6 if is_thief else 0.0
-	sprite.rotation.z = sin(time * 3.2 + phase_offset) * 0.018
-	sprite.position.y = 0.86 + sin(time * 4.0 + phase_offset) * 0.018
+	var moving: bool = actor.get("moving", false)
+	if moving:
+		# Up/down bobbing during movement
+		pivot.position = Vector3(0, sin(time * 14.0 + phase_offset) * 0.35, 0)
+		pivot.rotation.z = 0.0
+	else:
+		# Left/right swaying when idle
+		pivot.position = Vector3(
+			sin(time * 2.5 + phase_offset) * 0.18,
+			sin(time * 1.8 + phase_offset) * 0.025,
+			0,
+		)
+		pivot.rotation.z = sin(time * 2.5 + phase_offset) * 0.25
 
 
 func _follow_camera(camera: Camera3D, actor: Dictionary, role: String) -> void:
@@ -505,11 +604,10 @@ func _sync_afterimages(images: Array) -> void:
 		if not afterimage_nodes.has(key):
 			var node := Node3D.new()
 			var sprite := Sprite3D.new()
-			sprite.texture = load("res://assets/25d/thief.svg")
-			sprite.pixel_size = 0.0092
+			sprite.texture = load("res://GJGamejam素材/人物/主角.png")
+			sprite.pixel_size = 0.00270
 			sprite.position.y = 0.86
 			sprite.billboard = BaseMaterial3D.BILLBOARD_ENABLED
-			sprite.no_depth_test = true
 			sprite.modulate = Color(1.0, 0.13, 0.1, 0.58)
 			sprite.layers = LAYER_AFTERIMAGE
 			node.add_child(sprite)

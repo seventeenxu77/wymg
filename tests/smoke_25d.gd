@@ -28,6 +28,20 @@ func _run() -> void:
 	assert(renderer.thief_viewport.msaa_3d == Viewport.MSAA_4X)
 	assert(renderer.monster_viewport.use_taa)
 	assert(renderer.thief_viewport.use_taa)
+	assert(World25D.FLOOR_TEXTURES.size() == 12)
+	assert(renderer.monster_node.has_node("SwayPivot/OutlineSprite"))
+	assert(renderer.thief_node.has_node("SwayPivot/OutlineSprite"))
+	assert((renderer.monster_node.get_node("SwayPivot/PaperSprite") as Sprite3D).texture != null)
+	assert((renderer.thief_node.get_node("SwayPivot/PaperSprite") as Sprite3D).texture != null)
+	for floor_path in World25D.FLOOR_TEXTURES:
+		assert(ResourceLoader.exists(floor_path))
+	for furniture_kind in ["床", "衣柜", "书柜", "木桶", "木箱", "花瓶"]:
+		var visual_info: Dictionary = renderer._furniture_info(furniture_kind)
+		assert(ResourceLoader.exists(visual_info["path"]))
+	assert(game._furniture_durability("花瓶") == 1)
+	assert(game._furniture_durability("木桶") == 2)
+	assert(game._furniture_durability("木箱") == 3)
+	assert(game._furniture_durability("衣柜") == 4)
 	var elapsed_before_render: float = game.elapsed
 	game._process(0.5)
 	assert(is_equal_approx(game.elapsed, elapsed_before_render))
@@ -139,7 +153,7 @@ func _run() -> void:
 	game.monster["facing"] = Vector2.RIGHT
 	var test_storage := {
 		"id": "test-storage",
-		"kind": "桌子",
+		"kind": "木箱",
 		"pos": Vector2(3.2, 2.5),
 		"rotation": 0.0,
 		"opened": false,
