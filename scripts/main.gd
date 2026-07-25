@@ -1087,7 +1087,7 @@ func _draw_view_minimap(room_rect: Rect2, role: String) -> void:
 		map_rect = Rect2(room_rect.get_center() - Vector2.ONE * map_size / 2.0, Vector2.ONE * map_size)
 	draw_rect(map_rect.grow(7), Color(0.035, 0.04, 0.035, 0.94))
 	draw_rect(map_rect.grow(7), MONSTER_COLOR if role == "monster" else THIEF_COLOR, false, 1.5)
-	_draw_minimap(map_rect)
+	_draw_minimap(map_rect, role)
 	if not expanded:
 		_text("TAB" if role == "monster" else "N8", map_rect.position + Vector2(4, 12), 8, Color(1, 1, 1, 0.7))
 
@@ -1303,40 +1303,70 @@ func _draw_noise_directions(rect: Rect2, role: String, actor: Dictionary) -> voi
 			draw_arc(origin, radius, angle - 0.58, angle + 0.58, 12, Color(color, fade), 2)
 
 
-func _draw_minimap(rect: Rect2) -> void:
+func _minimap_rotation(role: String) -> float:
+	if not world_25d:
+		return 0.0
+	return deg_to_rad(float(world_25d.camera_yaw_degrees[role]))
+
+
+func _rotate_minimap_point(point: Vector2, center: Vector2, angle: float) -> Vector2:
+	return center + (point - center).rotated(angle)
+
+
+func _draw_minimap(rect: Rect2, role: String) -> void:
+	var angle := _minimap_rotation(role)
+	var center := rect.get_center()
+	var rotated_bounds_scale := absf(cos(angle)) + absf(sin(angle))
+	var grid_side := minf(rect.size.x, rect.size.y) / maxf(rotated_bounds_scale, 1.0)
+	var grid_rect := Rect2(center - Vector2.ONE * grid_side / 2.0, Vector2.ONE * grid_side)
 	var gap := 3.0
-	var cell := (rect.size.x - gap * (MAP_SIZE - 1)) / MAP_SIZE
+	var cell := (grid_side - gap * (MAP_SIZE - 1)) / MAP_SIZE
+	var actor: Dictionary = _get_actor(role)
+	var accent := MONSTER_COLOR if role == "monster" else THIEF_COLOR
 	for room in rooms:
 		var coord: Vector2i = room["coord"]
 		var cell_rect := Rect2(
-			rect.position + Vector2(coord.x, coord.y) * (cell + gap),
+			grid_rect.position + Vector2(coord.x, coord.y) * (cell + gap),
 			Vector2(cell, cell)
 		)
-		var has_monster: bool = monster["room"] == coord
-		var has_thief: bool = thief["room"] == coord
-		var fill := Color("#252824")
-		if has_monster and has_thief:
-			fill = Color("#7b6e65")
-		elif has_monster:
-			fill = MONSTER_COLOR.darkened(0.15)
-		elif has_thief:
-			fill = THIEF_COLOR.darkened(0.25)
-		draw_rect(cell_rect, fill)
-		draw_rect(cell_rect, Color("#4b5048"), false, 1)
+		var has_actor: bool = actor["room"] == coord
+		var fill := accent.darkened(0.2) if has_actor else Color("#252824")
+		var corners := PackedVector2Array([
+			_rotate_minimap_point(cell_rect.position, center, angle),
+			_rotate_minimap_point(Vector2(cell_rect.end.x, cell_rect.position.y), center, angle),
+			_rotate_minimap_point(cell_rect.end, center, angle),
+			_rotate_minimap_point(Vector2(cell_rect.position.x, cell_rect.end.y), center, angle),
+		])
+		draw_colored_polygon(corners, fill)
+		for corner_index in range(corners.size()):
+			draw_line(corners[corner_index], corners[(corner_index + 1) % corners.size()], Color("#4b5048"), 1)
 		var door_length := cell * 0.32
 		for door in room["doors"]:
+			var door_from := Vector2.ZERO
+			var door_to := Vector2.ZERO
 			match door:
 				"up":
-					draw_line(Vector2(cell_rect.get_center().x - door_length / 2, cell_rect.position.y), Vector2(cell_rect.get_center().x + door_length / 2, cell_rect.position.y), TEXT_COLOR, 2)
+					door_from = Vector2(cell_rect.get_center().x - door_length / 2, cell_rect.position.y)
+					door_to = Vector2(cell_rect.get_center().x + door_length / 2, cell_rect.position.y)
 				"down":
-					draw_line(Vector2(cell_rect.get_center().x - door_length / 2, cell_rect.end.y), Vector2(cell_rect.get_center().x + door_length / 2, cell_rect.end.y), TEXT_COLOR, 2)
+					door_from = Vector2(cell_rect.get_center().x - door_length / 2, cell_rect.end.y)
+					door_to = Vector2(cell_rect.get_center().x + door_length / 2, cell_rect.end.y)
 				"left":
-					draw_line(Vector2(cell_rect.position.x, cell_rect.get_center().y - door_length / 2), Vector2(cell_rect.position.x, cell_rect.get_center().y + door_length / 2), TEXT_COLOR, 2)
+					door_from = Vector2(cell_rect.position.x, cell_rect.get_center().y - door_length / 2)
+					door_to = Vector2(cell_rect.position.x, cell_rect.get_center().y + door_length / 2)
 				"right":
-					draw_line(Vector2(cell_rect.end.x, cell_rect.get_center().y - door_length / 2), Vector2(cell_rect.end.x, cell_rect.get_center().y + door_length / 2), TEXT_COLOR, 2)
-		if has_monster or has_thief:
-			var label := "怪盗" if has_monster and has_thief else ("怪" if has_monster else "盗")
-			_text_center(label, cell_rect, int(clamp(cell * 0.34, 7, 10)), Color("#111311"))
+					door_from = Vector2(cell_rect.end.x, cell_rect.get_center().y - door_length / 2)
+					door_to = Vector2(cell_rect.end.x, cell_rect.get_center().y + door_length / 2)
+			draw_line(
+				_rotate_minimap_point(door_from, center, angle),
+				_rotate_minimap_point(door_to, center, angle),
+				TEXT_COLOR,
+				2,
+			)
+		if has_actor:
+			var marker_center := _rotate_minimap_point(cell_rect.get_center(), center, angle)
+			draw_circle(marker_center, maxf(cell * 0.18, 3.5), accent)
+			draw_circle(marker_center, maxf(cell * 0.18, 3.5), Color("#111311"), false, 1.0)
 
 
 func _draw_countdown_overlay(size: Vector2) -> void:

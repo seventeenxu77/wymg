@@ -17,6 +17,7 @@ const LAYER_THIEF := 4
 const LAYER_AFTERIMAGE := 8
 const LAYER_MONSTER_EFFECT := 16
 const LAYER_THIEF_WORLD := 32
+const LAYER_SHARED_ACTORS := 64
 
 const FLOOR_TEXTURES := [
 	"res://GJGamejam素材/地板/木色地板2.png",
@@ -80,8 +81,8 @@ func setup(shared_world: World3D) -> void:
 	_create_environment()
 	monster_viewport = _create_viewport("MonsterViewport", shared_world)
 	thief_viewport = _create_viewport("ThiefViewport", shared_world)
-	monster_camera = _create_camera(monster_viewport, "MonsterCamera", LAYER_MONSTER_WORLD | LAYER_MONSTER | LAYER_AFTERIMAGE | LAYER_MONSTER_EFFECT)
-	thief_camera = _create_camera(thief_viewport, "ThiefCamera", LAYER_THIEF_WORLD | LAYER_MONSTER | LAYER_THIEF)
+	monster_camera = _create_camera(monster_viewport, "MonsterCamera", LAYER_MONSTER_WORLD | LAYER_MONSTER | LAYER_SHARED_ACTORS | LAYER_AFTERIMAGE | LAYER_MONSTER_EFFECT)
+	thief_camera = _create_camera(thief_viewport, "ThiefCamera", LAYER_THIEF_WORLD | LAYER_THIEF | LAYER_SHARED_ACTORS)
 	monster_node = _create_actor("monster", LAYER_MONSTER)
 	thief_node = _create_actor("thief", LAYER_THIEF)
 	attack_cone = _create_attack_cone()
@@ -479,6 +480,9 @@ func sync(rooms: Array, monster: Dictionary, thief: Dictionary, afterimages: Arr
 		return
 	_sync_actor(monster_node, monster, time, false)
 	_sync_actor(thief_node, thief, time, true)
+	var actors_share_room: bool = monster["room"] == thief["room"]
+	_set_actor_visual_layers(monster_node, LAYER_MONSTER | (LAYER_SHARED_ACTORS if actors_share_room else 0))
+	_set_actor_visual_layers(thief_node, LAYER_THIEF | (LAYER_SHARED_ACTORS if actors_share_room else 0))
 	_follow_camera(monster_camera, monster, "monster")
 	_follow_camera(thief_camera, thief, "thief")
 	for room in rooms:
@@ -520,7 +524,7 @@ func sync(rooms: Array, monster: Dictionary, thief: Dictionary, afterimages: Arr
 			item_node.position = world_position(coord, item["pos"])
 			item_node.visible = not bool(item["collected"]) and not _item_hidden(room, item)
 		_sync_room_marks(room)
-	_sync_afterimages(afterimages)
+	_sync_afterimages(afterimages, monster["room"], thief["room"])
 	_sync_attack(monster, attack_active)
 	_sync_room_layers(monster["room"], thief["room"])
 
@@ -562,6 +566,13 @@ func _sync_actor(node: Node3D, actor: Dictionary, time: float, is_thief: bool) -
 		pivot.rotation.z = sin(time * 2.5 + phase_offset) * 0.25
 
 
+func _set_actor_visual_layers(node: Node, layers: int) -> void:
+	for child in node.get_children():
+		if child is VisualInstance3D:
+			(child as VisualInstance3D).layers = layers
+		_set_actor_visual_layers(child, layers)
+
+
 func _follow_camera(camera: Camera3D, actor: Dictionary, role: String) -> void:
 	var target := world_position(actor["room"], actor["pos"], 0.38)
 	# Zero degrees is deliberately aligned with the room axes:
@@ -596,8 +607,9 @@ func _sync_attack(monster: Dictionary, active: bool) -> void:
 		"left": attack_cone.rotation.y = PI / 2.0
 
 
-func _sync_afterimages(images: Array) -> void:
+func _sync_afterimages(images: Array, monster_room: Vector2i, thief_room: Vector2i) -> void:
 	var live: Dictionary = {}
+	var actors_share_room := monster_room == thief_room
 	for image in images:
 		var key := "%.4f" % float(image["created"])
 		live[key] = true
@@ -615,6 +627,7 @@ func _sync_afterimages(images: Array) -> void:
 			afterimage_nodes[key] = node
 		var image_node: Node3D = afterimage_nodes[key]
 		image_node.position = world_position(image["room"], image["pos"])
+		image_node.visible = actors_share_room and image["room"] == monster_room
 	for key in afterimage_nodes.keys():
 		if not live.has(key):
 			var stale: Node3D = afterimage_nodes[key]

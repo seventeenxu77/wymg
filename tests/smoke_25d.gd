@@ -33,6 +33,40 @@ func _run() -> void:
 	assert(renderer.thief_node.has_node("SwayPivot/OutlineSprite"))
 	assert((renderer.monster_node.get_node("SwayPivot/PaperSprite") as Sprite3D).texture != null)
 	assert((renderer.thief_node.get_node("SwayPivot/PaperSprite") as Sprite3D).texture != null)
+	assert((renderer.monster_camera.cull_mask & World25D.LAYER_MONSTER) != 0)
+	assert((renderer.monster_camera.cull_mask & World25D.LAYER_THIEF) == 0)
+	assert((renderer.monster_camera.cull_mask & World25D.LAYER_SHARED_ACTORS) != 0)
+	assert((renderer.thief_camera.cull_mask & World25D.LAYER_THIEF) != 0)
+	assert((renderer.thief_camera.cull_mask & World25D.LAYER_MONSTER) == 0)
+	assert((renderer.thief_camera.cull_mask & World25D.LAYER_SHARED_ACTORS) != 0)
+	var monster_sprite := renderer.monster_node.get_node("SwayPivot/PaperSprite") as Sprite3D
+	var thief_sprite := renderer.thief_node.get_node("SwayPivot/PaperSprite") as Sprite3D
+	assert((monster_sprite.layers & World25D.LAYER_SHARED_ACTORS) == 0)
+	assert((thief_sprite.layers & World25D.LAYER_SHARED_ACTORS) == 0)
+	var original_thief_room: Vector2i = game.thief["room"]
+	var original_thief_pos: Vector2 = game.thief["pos"]
+	game.thief["room"] = game.monster["room"]
+	game.thief["pos"] = game.monster["pos"]
+	renderer.sync(game.rooms, game.monster, game.thief, game.afterimages, game.dragging, false, game.elapsed)
+	assert((monster_sprite.layers & World25D.LAYER_SHARED_ACTORS) != 0)
+	assert((thief_sprite.layers & World25D.LAYER_SHARED_ACTORS) != 0)
+	game.thief["room"] = original_thief_room
+	game.thief["pos"] = original_thief_pos
+	renderer.sync(game.rooms, game.monster, game.thief, game.afterimages, game.dragging, false, game.elapsed)
+	assert((monster_sprite.layers & World25D.LAYER_SHARED_ACTORS) == 0)
+	assert((thief_sprite.layers & World25D.LAYER_SHARED_ACTORS) == 0)
+	var visibility_afterimage := [{
+		"created": 1234.0,
+		"room": game.monster["room"],
+		"pos": game.monster["pos"],
+	}]
+	renderer._sync_afterimages(visibility_afterimage, game.monster["room"], game.thief["room"])
+	var visibility_afterimage_node: Node3D = renderer.afterimage_nodes["1234.0000"]
+	assert(not visibility_afterimage_node.visible)
+	renderer._sync_afterimages(visibility_afterimage, game.monster["room"], game.monster["room"])
+	assert(visibility_afterimage_node.visible)
+	renderer._sync_afterimages([], game.monster["room"], game.thief["room"])
+	assert(not renderer.afterimage_nodes.has("1234.0000"))
 	for floor_path in World25D.FLOOR_TEXTURES:
 		assert(ResourceLoader.exists(floor_path))
 	for furniture_kind in ["床", "衣柜", "书柜", "木桶", "木箱", "花瓶"]:
@@ -92,6 +126,8 @@ func _run() -> void:
 	var thief_after_left_rotation: Vector3 = renderer.thief_camera.position
 	assert(monster_before.distance_to(monster_after) > 1.0)
 	assert(thief_before.is_equal_approx(thief_after_left_rotation))
+	assert(is_equal_approx(game._minimap_rotation("monster"), deg_to_rad(45.0)))
+	assert(is_equal_approx(game._minimap_rotation("thief"), 0.0))
 
 	renderer.rotate_camera("thief", -1)
 	renderer.sync(game.rooms, game.monster, game.thief, game.afterimages, game.dragging, false, game.elapsed)
@@ -99,6 +135,10 @@ func _run() -> void:
 	var thief_after: Vector3 = renderer.thief_camera.position
 	assert(monster_after.is_equal_approx(monster_after_right_rotation))
 	assert(thief_before.distance_to(thief_after) > 1.0)
+	assert(is_equal_approx(game._minimap_rotation("monster"), deg_to_rad(45.0)))
+	assert(is_equal_approx(game._minimap_rotation("thief"), deg_to_rad(315.0)))
+	game.queue_redraw()
+	await process_frame
 
 	var monster_up: Vector2 = renderer.camera_relative_vector("monster", Vector2.UP)
 	var thief_up: Vector2 = renderer.camera_relative_vector("thief", Vector2.UP)
