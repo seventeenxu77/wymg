@@ -5,7 +5,11 @@ extends Node
 const CELL_SIZE := 2.10
 const ROOM_EXTENT := 5.25
 const ROOM_SPACING := ROOM_EXTENT * 2.0
-const VIEWPORT_SIZE := Vector2i(800, 650)
+const VIEWPORT_SIZE := Vector2i(768, 768)
+const CAMERA_HEIGHT := 10.0
+const CAMERA_DISTANCE := 15.0
+const CAMERA_FOV := 50.0
+const INVALID_ROOM := Vector2i(-999, -999)
 
 const LAYER_MONSTER_WORLD := 1
 const LAYER_MONSTER := 2
@@ -31,6 +35,8 @@ var trace_nodes: Dictionary = {}
 var stroke_nodes: Dictionary = {}
 var afterimage_nodes: Dictionary = {}
 var room_visuals: Dictionary = {}
+var active_monster_room := INVALID_ROOM
+var active_thief_room := INVALID_ROOM
 var camera_yaw_degrees := {
 	"monster": 0.0,
 	"thief": 0.0,
@@ -117,7 +123,8 @@ func _create_viewport(viewport_name: String, shared_world: World3D) -> SubViewpo
 	viewport.world_3d = shared_world
 	viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
 	viewport.handle_input_locally = false
-	viewport.msaa_3d = Viewport.MSAA_2X
+	viewport.msaa_3d = Viewport.MSAA_4X
+	viewport.use_taa = true
 	viewport.positional_shadow_atlas_size = 2048
 	add_child(viewport)
 	return viewport
@@ -126,10 +133,10 @@ func _create_viewport(viewport_name: String, shared_world: World3D) -> SubViewpo
 func _create_camera(viewport: SubViewport, camera_name: String, mask: int) -> Camera3D:
 	var camera := Camera3D.new()
 	camera.name = camera_name
-	camera.projection = Camera3D.PROJECTION_ORTHOGONAL
-	camera.size = 13.0
+	camera.projection = Camera3D.PROJECTION_PERSPECTIVE
+	camera.fov = CAMERA_FOV
 	camera.near = 0.1
-	camera.far = 50.0
+	camera.far = 100.0
 	camera.cull_mask = mask
 	viewport.add_child(camera)
 	camera.current = true
@@ -146,6 +153,8 @@ func rebuild(rooms: Array) -> void:
 	trace_nodes.clear()
 	stroke_nodes.clear()
 	room_visuals.clear()
+	active_monster_room = INVALID_ROOM
+	active_thief_room = INVALID_ROOM
 	for room in rooms:
 		_create_room(room)
 		for furniture in room["furniture"]:
@@ -377,8 +386,8 @@ func sync(rooms: Array, monster: Dictionary, thief: Dictionary, afterimages: Arr
 		return
 	_sync_actor(monster_node, monster, time, false)
 	_sync_actor(thief_node, thief, time, true)
-	_follow_camera(monster_camera, monster["room"], "monster")
-	_follow_camera(thief_camera, thief["room"], "thief")
+	_follow_camera(monster_camera, monster, "monster")
+	_follow_camera(thief_camera, thief, "thief")
 	for room in rooms:
 		var coord: Vector2i = room["coord"]
 		for furniture in room["furniture"]:
@@ -413,14 +422,15 @@ func _sync_actor(node: Node3D, actor: Dictionary, time: float, is_thief: bool) -
 	sprite.position.y = 0.86 + sin(time * 4.0 + phase_offset) * 0.018
 
 
-func _follow_camera(camera: Camera3D, room: Vector2i, role: String) -> void:
-	var center := room_origin(room) + Vector3(0, 0.38, 0)
+func _follow_camera(camera: Camera3D, actor: Dictionary, role: String) -> void:
+	var target := world_position(actor["room"], actor["pos"], 0.38)
 	# Zero degrees is deliberately aligned with the room axes:
 	# screen right = world +X, screen up = world -Z.
-	var offset := Vector3(0.0, 15.5, 11.0)
+	# Follow the actor at a fixed offset so movement never changes actor scale.
+	var offset := Vector3(0.0, CAMERA_HEIGHT, CAMERA_DISTANCE)
 	offset = offset.rotated(Vector3.UP, deg_to_rad(float(camera_yaw_degrees[role])))
-	camera.position = center + offset
-	camera.look_at(center, Vector3.UP)
+	camera.position = target + offset
+	camera.look_at(target, Vector3.UP)
 
 
 func rotate_camera(role: String, direction: int) -> void:
@@ -534,16 +544,34 @@ func _register_room_visual(room: Vector2i, visual: VisualInstance3D) -> void:
 	if not room_visuals.has(key):
 		room_visuals[key] = []
 	room_visuals[key].append(visual)
-	visual.layers = 0
+	visual.layers = _layers_for_room_key(key)
 
 
 func _sync_room_layers(monster_room: Vector2i, thief_room: Vector2i) -> void:
-	for visuals in room_visuals.values():
-		for visual in visuals:
-			if is_instance_valid(visual):
-				(visual as VisualInstance3D).layers = 0
+	if monster_room == active_monster_room and thief_room == active_thief_room:
+		return
+	# Enable the destination rooms first. The previous rooms remain visible until
+	# every new layer has reached the renderer, preventing a transient black frame.
 	_apply_room_layer(monster_room, LAYER_MONSTER_WORLD)
 	_apply_room_layer(thief_room, LAYER_THIEF_WORLD)
+	active_monster_room = monster_room
+	active_thief_room = thief_room
+	for key in room_visuals.keys():
+		var desired_layers := _layers_for_room_key(key)
+		for visual in room_visuals[key]:
+			if is_instance_valid(visual):
+				var instance := visual as VisualInstance3D
+				if instance.layers != desired_layers:
+					instance.layers = desired_layers
+
+
+func _layers_for_room_key(key: String) -> int:
+	var layers := 0
+	if key == _room_key(active_monster_room):
+		layers |= LAYER_MONSTER_WORLD
+	if key == _room_key(active_thief_room):
+		layers |= LAYER_THIEF_WORLD
+	return layers
 
 
 func _apply_room_layer(room: Vector2i, layer: int) -> void:

@@ -78,6 +78,7 @@ func _ready() -> void:
 	world_25d.setup(get_viewport().world_3d)
 	new_game()
 	set_process(true)
+	set_physics_process(true)
 	set_process_input(true)
 
 
@@ -105,6 +106,7 @@ func new_game() -> void:
 	if world_25d:
 		world_25d.rebuild(rooms)
 		world_25d.sync(rooms, monster, thief, afterimages, dragging, false, elapsed)
+		world_25d.reset_physics_interpolation()
 	queue_redraw()
 
 
@@ -117,11 +119,17 @@ func _make_actor(room: Vector2i, pos: Vector2, dir: String) -> Dictionary:
 	}
 
 
-func _process(delta: float) -> void:
+func _process(_delta: float) -> void:
 	if Engine.is_editor_hint():
 		if world_25d:
 			world_25d.sync(rooms, monster, thief, afterimages, dragging, false, elapsed)
 		queue_redraw()
+		return
+	queue_redraw()
+
+
+func _physics_process(delta: float) -> void:
+	if Engine.is_editor_hint():
 		return
 	elapsed += delta
 	_update_phase(delta)
@@ -136,7 +144,6 @@ func _process(delta: float) -> void:
 		_handle_continuous_input(delta)
 	if world_25d:
 		world_25d.sync(rooms, monster, thief, afterimages, dragging, elapsed < attack_until, elapsed)
-	queue_redraw()
 
 
 func _update_phase(delta: float) -> void:
