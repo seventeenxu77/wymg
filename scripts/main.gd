@@ -10,6 +10,14 @@ const ACTOR_SPEED := 4.0
 const FURNITURE_SPEED := 2.0
 const ROTATION_SPEED := 90.0
 const ROTATION_STEP := 4.0
+const FURNITURE_HIT_REACH := 1.35
+const FURNITURE_HIT_DOT := 0.62
+const TRINKET_SPAWN_CHANCE := 0.5
+const HIT_WINDUP_TIME := 0.16
+const HIT_LUNGE_TIME := 0.14
+const HIT_RECOVER_TIME := 0.16
+const HIT_WINDUP_DISTANCE := 0.22
+const HIT_LUNGE_DISTANCE := 0.38
 const ENTRANCE_ROOM := Vector2i(0, 5)
 const ENTRANCE_POS := Vector2(0.5, 4.5)
 const MONSTER_SPAWN_ROOM := Vector2i(5, 0)
@@ -36,10 +44,12 @@ const DIRECTIONS := [
 ]
 
 const TREASURES := [
-	{"id": "treasure-2", "label": "银制烛台", "value": 2},
-	{"id": "treasure-3", "label": "祖母绿胸针", "value": 3},
-	{"id": "treasure-5", "label": "怪物之心", "value": 5},
+	{"id": "treasure-2", "kind": "treasure", "label": "银制烛台", "value": 2},
+	{"id": "treasure-3", "kind": "treasure", "label": "祖母绿胸针", "value": 3},
+	{"id": "treasure-5", "kind": "treasure", "label": "怪物之心", "value": 5},
 ]
+
+const TRINKETS := ["旧怀表", "银汤匙", "铜制烟盒", "珍珠纽扣"]
 
 var rng := RandomNumberGenerator.new()
 var rooms: Array = []
@@ -47,8 +57,12 @@ var monster: Dictionary = {}
 var thief: Dictionary = {}
 var dragging := {"monster": "", "thief": ""}
 var drag_mode := {"monster": "move", "thief": "move"}
+var furniture_hit_actions := {"monster": {}, "thief": {}}
+var active_storage_id := ""
 var selected_treasure := 0
 var loot_value := 0
+var extracted_value := 0
+var has_extracted := false
 var pills := 0
 var phase := "hide"
 var seconds_left := 180
@@ -88,8 +102,12 @@ func new_game() -> void:
 	thief = _make_actor(ENTRANCE_ROOM, ENTRANCE_POS, "right")
 	dragging = {"monster": "", "thief": ""}
 	drag_mode = {"monster": "move", "thief": "move"}
+	furniture_hit_actions = {"monster": {}, "thief": {}}
+	active_storage_id = ""
 	selected_treasure = 0
 	loot_value = 0
+	extracted_value = 0
+	has_extracted = false
 	pills = 0
 	phase = "hide"
 	seconds_left = 180
@@ -115,6 +133,8 @@ func _make_actor(room: Vector2i, pos: Vector2, dir: String) -> Dictionary:
 		"room": room,
 		"pos": pos,
 		"dir": dir,
+		"facing": _direction_vector(dir),
+		"impact_visual_offset": Vector2.ZERO,
 		"hp": 2,
 	}
 
@@ -134,6 +154,8 @@ func _physics_process(delta: float) -> void:
 	elapsed += delta
 	_update_phase(delta)
 	_update_temporary_events()
+	_update_furniture_hit_actions(delta)
+	_update_storage_panel()
 	if phase == "hunt":
 		stomach_clock -= delta
 		if stomach_clock <= 0.0:
@@ -179,22 +201,12 @@ func _handle_continuous_input(delta: float) -> void:
 	var ty := int(Input.is_key_pressed(KEY_DOWN)) - int(Input.is_key_pressed(KEY_UP))
 	_apply_view_relative_input("thief", Vector2(tx, ty), delta)
 
-	if Input.is_physical_key_pressed(KEY_Z):
-		_rotate_furniture("monster", -1, ROTATION_SPEED * delta)
-	if Input.is_physical_key_pressed(KEY_C):
-		_rotate_furniture("monster", 1, ROTATION_SPEED * delta)
-	if Input.is_key_pressed(KEY_KP_4):
-		_rotate_furniture("thief", -1, ROTATION_SPEED * delta)
-	if Input.is_key_pressed(KEY_KP_6):
-		_rotate_furniture("thief", 1, ROTATION_SPEED * delta)
-
-
 func _apply_view_relative_input(role: String, screen_input: Vector2, delta: float) -> void:
 	if screen_input.is_zero_approx():
 		return
-	if dragging[role] != "" and drag_mode[role] == "rotate":
-		if not is_zero_approx(screen_input.x):
-			_rotate_furniture(role, signf(screen_input.x), ROTATION_SPEED * delta)
+	if not (furniture_hit_actions[role] as Dictionary).is_empty():
+		return
+	if role == "monster" and not _active_storage_furniture().is_empty():
 		return
 	var world_direction := screen_input.normalized()
 	if world_25d:
@@ -218,7 +230,11 @@ func _input(event: InputEvent) -> void:
 	var physical: Key = event.physical_keycode
 	if key == KEY_F2:
 		new_game()
-	elif physical == KEY_H and phase == "hide":
+		return
+	if _handle_storage_panel_input(key, physical):
+		get_viewport().set_input_as_handled()
+		return
+	if physical == KEY_H and phase == "hide":
 		_begin_hunt_countdown()
 	elif physical == KEY_Q:
 		if world_25d:
@@ -227,23 +243,15 @@ func _input(event: InputEvent) -> void:
 		if world_25d:
 			world_25d.rotate_camera("monster", 1)
 	elif physical == KEY_G:
-		_interact_furniture("monster")
-	elif physical == KEY_F:
-		_place_treasure()
-	elif physical == KEY_R:
-		selected_treasure = (selected_treasure + 1) % TREASURES.size()
+		_hit_furniture("monster")
 	elif physical == KEY_SPACE:
 		_attack()
-	elif physical == KEY_T:
-		_toggle_furniture_mode("monster")
 	elif key == KEY_KP_0:
-		_interact_furniture("thief")
+		_hit_furniture("thief")
 	elif key == KEY_KP_1:
 		_thief_search()
 	elif key == KEY_KP_2:
 		_use_pill()
-	elif key == KEY_KP_3:
-		_toggle_furniture_mode("thief")
 	elif key == KEY_KP_5:
 		_thief_exit()
 	elif key == KEY_KP_7:
@@ -252,6 +260,25 @@ func _input(event: InputEvent) -> void:
 	elif key == KEY_KP_9:
 		if world_25d:
 			world_25d.rotate_camera("thief", 1)
+
+
+func _handle_storage_panel_input(key: Key, physical: Key) -> bool:
+	if _active_storage_furniture().is_empty():
+		return false
+	if key == KEY_ESCAPE:
+		active_storage_id = ""
+		_push_log("已关闭家具面板。")
+		return true
+	if physical == KEY_W:
+		selected_treasure = (selected_treasure - 1 + TREASURES.size()) % TREASURES.size()
+		return true
+	if physical == KEY_S:
+		selected_treasure = (selected_treasure + 1) % TREASURES.size()
+		return true
+	if physical == KEY_R:
+		_place_treasure()
+		return true
+	return false
 
 
 func _room_index(room_pos: Vector2i) -> int:
@@ -325,11 +352,26 @@ func _generate_rooms() -> Array:
 		var count := rng.randi_range(1, 3)
 		for index in range(count):
 			var pos := _empty_position(room, reserved)
+			var kind: String = kinds[rng.randi_range(0, kinds.size() - 1)]
+			var contents: Array = []
+			if rng.randf() < TRINKET_SPAWN_CHANCE:
+				contents.append({
+					"id": "trinket-%d-%d-%d" % [room["coord"].x, room["coord"].y, index],
+					"kind": "trinket",
+					"label": TRINKETS[rng.randi_range(0, TRINKETS.size() - 1)],
+					"value": 1,
+				})
 			room["furniture"].append({
 				"id": "f-%d-%d-%d" % [room["coord"].x, room["coord"].y, index],
-				"kind": kinds[rng.randi_range(0, kinds.size() - 1)],
+				"kind": kind,
 				"pos": pos,
 				"rotation": float(rng.randi_range(0, 3) * 90),
+				"opened": false,
+				"destroyed": false,
+				"damage": 0,
+				"durability": _furniture_durability(kind),
+				"contents": contents,
+				"last_hit_time": -10.0,
 			})
 
 	for index in range(5):
@@ -344,6 +386,13 @@ func _generate_rooms() -> Array:
 			"collected": false,
 		})
 	return generated
+
+
+func _furniture_durability(kind: String) -> int:
+	match kind:
+		"沙发": return 2
+		"桌子": return 3
+		_: return 4
 
 
 func _empty_position(room: Dictionary, reserved: Array = []) -> Vector2:
@@ -422,6 +471,8 @@ func _begin_hunt_countdown() -> void:
 	thief = _make_actor(ENTRANCE_ROOM, ENTRANCE_POS, "right")
 	dragging = {"monster": "", "thief": ""}
 	drag_mode = {"monster": "move", "thief": "move"}
+	furniture_hit_actions = {"monster": {}, "thief": {}}
+	active_storage_id = ""
 	_push_log("藏宝结束：双方已回到起点，5 秒后正式开始。")
 
 
@@ -430,21 +481,10 @@ func _enter_hunt() -> void:
 		return
 	var unplaced := 0
 	for treasure in TREASURES:
-		var found := false
-		for room in rooms:
-			for item in room["items"]:
-				if item["id"] == treasure["id"]:
-					found = true
-		if not found:
-			var room: Dictionary = rooms[rng.randi_range(0, rooms.size() - 1)]
-			room["items"].append({
-				"id": treasure["id"],
-				"kind": "treasure",
-				"label": treasure["label"],
-				"value": treasure["value"],
-				"pos": _empty_position(room),
-				"collected": false,
-			})
+		if not _treasure_is_in_world(str(treasure["id"])):
+			var furniture := _random_intact_furniture()
+			if not furniture.is_empty():
+				furniture["contents"].append((treasure as Dictionary).duplicate(true))
 			unplaced += 1
 	phase = "hunt"
 	seconds_left = 0
@@ -452,12 +492,44 @@ func _enter_hunt() -> void:
 	thief = _make_actor(ENTRANCE_ROOM, ENTRANCE_POS, "right")
 	dragging = {"monster": "", "thief": ""}
 	drag_mode = {"monster": "move", "thief": "move"}
+	furniture_hit_actions = {"monster": {}, "thief": {}}
+	active_storage_id = ""
 	last_afterimage_at = -10.0
 	stomach_clock = 15.0
 	if unplaced > 0:
-		_push_log("搜查开始：%d 件未放置藏品已自动散落。" % unplaced)
+		_push_log("搜查开始：%d 件未存放藏品已自动放入家具。" % unplaced)
 	else:
 		_push_log("搜查开始：怪物与盗贼已回到各自起点。")
+
+
+func _treasure_is_in_world(treasure_id: String) -> bool:
+	for room in rooms:
+		for furniture in room["furniture"]:
+			for content in furniture["contents"]:
+				if str(content["id"]) == treasure_id:
+					return true
+		for item in room["items"]:
+			if str(item["id"]) == treasure_id and not bool(item["collected"]):
+				return true
+	return false
+
+
+func _random_intact_furniture() -> Dictionary:
+	var candidates: Array = []
+	for room in rooms:
+		for furniture in room["furniture"]:
+			if not bool(furniture["destroyed"]) and not _furniture_has_treasure(furniture):
+				candidates.append(furniture)
+	if candidates.is_empty():
+		return {}
+	return candidates[rng.randi_range(0, candidates.size() - 1)]
+
+
+func _furniture_has_treasure(furniture: Dictionary) -> bool:
+	for content in furniture.get("contents", []):
+		if str(content.get("kind", "")) == "treasure":
+			return true
+	return false
 
 
 func _move_actor_continuous(role: String, direction: Vector2, delta: float) -> void:
@@ -466,7 +538,11 @@ func _move_actor_continuous(role: String, direction: Vector2, delta: float) -> v
 	if direction.is_zero_approx():
 		return
 	var speed := FURNITURE_SPEED if dragging[role] != "" else ACTOR_SPEED
-	var motion := direction.normalized() * speed * delta
+	var intended_direction := direction.normalized()
+	var actor := _get_actor(role)
+	actor["facing"] = intended_direction
+	actor["dir"] = _direction_name(intended_direction)
+	var motion := intended_direction * speed * delta
 	var subdivisions := maxi(1, int(ceil(motion.length() / 0.05)))
 	var step := motion / float(subdivisions)
 	for _index in range(subdivisions):
@@ -474,6 +550,8 @@ func _move_actor_continuous(role: String, direction: Vector2, delta: float) -> v
 			_move_actor_axis(role, Vector2(step.x, 0))
 		if not is_zero_approx(step.y):
 			_move_actor_axis(role, Vector2(0, step.y))
+	actor["facing"] = intended_direction
+	actor["dir"] = _direction_name(intended_direction)
 
 
 func _move_actor_axis(role: String, motion: Vector2) -> void:
@@ -496,6 +574,8 @@ func _move_actor_axis(role: String, motion: Vector2) -> void:
 		)
 		for other in room["furniture"]:
 			if other["id"] == held["id"]:
+				continue
+			if bool(other.get("destroyed", false)):
 				continue
 			if (other["pos"] as Vector2).distance_to(next_furniture) < 0.78 or (other["pos"] as Vector2).distance_to(next_actor) < 0.58:
 				blocked = true
@@ -531,6 +611,8 @@ func _move_actor_axis(role: String, motion: Vector2) -> void:
 
 	var target_room_data := _room_at(target_room)
 	for furniture in target_room_data["furniture"]:
+		if bool(furniture.get("destroyed", false)):
+			continue
 		var furniture_pos: Vector2 = furniture["pos"]
 		if abs(furniture_pos.x - target_pos.x) < 0.52 and abs(furniture_pos.y - target_pos.y) < 0.52:
 			return
@@ -555,35 +637,151 @@ func _find_furniture(room: Dictionary, id: String) -> Dictionary:
 	return {}
 
 
-func _interact_furniture(role: String) -> void:
+func _hit_furniture(role: String) -> void:
 	if phase == "ended" or phase == "ready" or (phase == "hide" and role == "thief"):
 		return
-	var actor := _get_actor(role)
-	var room := _room_at(actor["room"])
-	if dragging[role] != "":
-		dragging[role] = ""
-		drag_mode[role] = "move"
-		_push_log("%s松开了家具。" % _role_name(role))
+	if not (furniture_hit_actions[role] as Dictionary).is_empty():
 		return
-	var nearby: Dictionary = {}
-	for furniture in room["furniture"]:
-		if (furniture["pos"] as Vector2).distance_to(actor["pos"]) <= 1.25:
-			nearby = furniture
-			break
+	var actor := _get_actor(role)
+	var nearby := _furniture_in_front(role)
+	if nearby.is_empty():
+		_push_log("%s前方没有可撞击的家具。" % _role_name(role))
+		return
+	if bool(nearby["destroyed"]):
+		_push_log("%s已经损毁。" % nearby["kind"])
+		return
+	if role == "monster":
+		active_storage_id = ""
+	var facing: Vector2 = actor.get("facing", _direction_vector(str(actor["dir"])))
+	furniture_hit_actions[role] = {
+		"elapsed": 0.0,
+		"impacted": false,
+		"room": actor["room"],
+		"furniture_id": str(nearby["id"]),
+		"facing": facing.normalized(),
+	}
+
+
+func _update_furniture_hit_actions(delta: float) -> void:
+	var impact_time := HIT_WINDUP_TIME + HIT_LUNGE_TIME
+	var total_time := impact_time + HIT_RECOVER_TIME
+	for role in ["monster", "thief"]:
+		var action: Dictionary = furniture_hit_actions[role]
+		if action.is_empty():
+			continue
+		action["elapsed"] = float(action["elapsed"]) + delta
+		var action_time: float = action["elapsed"]
+		var facing: Vector2 = action["facing"]
+		var actor := _get_actor(role)
+		if action_time < HIT_WINDUP_TIME:
+			var windup_t := smoothstep(0.0, 1.0, action_time / HIT_WINDUP_TIME)
+			actor["impact_visual_offset"] = -facing * HIT_WINDUP_DISTANCE * windup_t
+		elif action_time < impact_time:
+			var lunge_t := smoothstep(0.0, 1.0, (action_time - HIT_WINDUP_TIME) / HIT_LUNGE_TIME)
+			actor["impact_visual_offset"] = facing * lerpf(-HIT_WINDUP_DISTANCE, HIT_LUNGE_DISTANCE, lunge_t)
+		else:
+			if not bool(action["impacted"]):
+				action["impacted"] = true
+				_apply_furniture_hit(role, action)
+			var recover_t := clampf((action_time - impact_time) / HIT_RECOVER_TIME, 0.0, 1.0)
+			actor["impact_visual_offset"] = facing * HIT_LUNGE_DISTANCE * (1.0 - smoothstep(0.0, 1.0, recover_t))
+		if action_time >= total_time:
+			actor["impact_visual_offset"] = Vector2.ZERO
+			furniture_hit_actions[role] = {}
+
+
+func _apply_furniture_hit(role: String, action: Dictionary) -> void:
+	var room_coord: Vector2i = action["room"]
+	var room := _room_at(room_coord)
+	var furniture := _find_furniture(room, str(action["furniture_id"]))
+	if furniture.is_empty() or bool(furniture["destroyed"]):
+		return
 	room["traces"].append({
-		"pos": nearby["pos"] if not nearby.is_empty() else actor["pos"],
+		"pos": furniture["pos"],
 		"role": role,
 		"kind": "interact",
 	})
-	_add_noise(role, "操作家具")
+	_add_noise(role, "撞击家具")
 	if role == "thief":
 		_reveal_thief()
-	if nearby.is_empty():
-		_push_log("附近没有可以移动的家具。")
+	furniture["last_hit_time"] = elapsed
+	if role == "monster":
+		var was_open := bool(furniture["opened"])
+		furniture["opened"] = true
+		active_storage_id = str(furniture["id"])
+		if was_open:
+			_push_log("%s已打开，藏品面板与家具面板已显示。" % furniture["kind"])
+		else:
+			_push_log("怪物一击打开了%s，藏品面板与家具面板已显示。" % furniture["kind"])
 	else:
-		dragging[role] = nearby["id"]
-		drag_mode[role] = "move"
-		_push_log("%s抓住了%s。" % [_role_name(role), nearby["kind"]])
+		furniture["damage"] = int(furniture["damage"]) + 1
+		var durability: int = int(furniture["durability"])
+		if int(furniture["damage"]) >= durability:
+			furniture["damage"] = durability
+			furniture["destroyed"] = true
+			furniture["opened"] = true
+			var released := _release_furniture_contents(room, furniture)
+			_push_log("盗贼撞毁了%s，掉出 %d 件财物。" % [furniture["kind"], released])
+		else:
+			_push_log("%s损毁度 %d / %d。" % [furniture["kind"], furniture["damage"], durability])
+
+
+func _interact_furniture(role: String) -> void:
+	_hit_furniture(role)
+
+
+func _furniture_in_front(role: String, require_open := false) -> Dictionary:
+	var actor := _get_actor(role)
+	var room := _room_at(actor["room"])
+	var facing: Vector2 = actor.get("facing", _direction_vector(str(actor["dir"])))
+	var best: Dictionary = {}
+	var best_distance := INF
+	for furniture in room["furniture"]:
+		if require_open and (not bool(furniture["opened"]) or bool(furniture["destroyed"])):
+			continue
+		var offset: Vector2 = (furniture["pos"] as Vector2) - (actor["pos"] as Vector2)
+		var distance := offset.length()
+		if distance <= 0.001 or distance > FURNITURE_HIT_REACH:
+			continue
+		if offset.normalized().dot(facing) < FURNITURE_HIT_DOT:
+			continue
+		if distance < best_distance:
+			best = furniture
+			best_distance = distance
+	return best
+
+
+func _update_storage_panel() -> void:
+	if active_storage_id == "":
+		return
+	if _active_storage_furniture().is_empty():
+		active_storage_id = ""
+
+
+func _active_storage_furniture() -> Dictionary:
+	if phase != "hide" or active_storage_id == "":
+		return {}
+	var room := _room_at(monster["room"])
+	var furniture := _find_furniture(room, active_storage_id)
+	if furniture.is_empty() or not bool(furniture["opened"]) or bool(furniture["destroyed"]):
+		return {}
+	if (furniture["pos"] as Vector2).distance_to(monster["pos"]) > 1.65:
+		return {}
+	return furniture
+
+
+func _release_furniture_contents(room: Dictionary, furniture: Dictionary) -> int:
+	var contents: Array = furniture["contents"]
+	var released := contents.size()
+	for index in range(contents.size()):
+		var item: Dictionary = (contents[index] as Dictionary).duplicate(true)
+		var angle := TAU * float(index) / float(maxi(contents.size(), 1))
+		var offset := Vector2.RIGHT.rotated(angle) * (0.28 + 0.08 * float(index))
+		item["pos"] = (furniture["pos"] as Vector2) + offset
+		item["collected"] = false
+		room["items"].append(item)
+	contents.clear()
+	return released
 
 
 func _toggle_furniture_mode(role: String) -> void:
@@ -636,36 +834,34 @@ func _place_treasure() -> void:
 	if phase != "hide":
 		return
 	var treasure: Dictionary = TREASURES[selected_treasure]
-	for room in rooms:
-		for item in room["items"]:
-			if item["id"] == treasure["id"]:
-				_push_log("%s已经放置过了，请切换藏品。" % treasure["label"])
-				return
-	var room := _room_at(monster["room"])
-	for item in room["items"]:
-		if (item["pos"] as Vector2).distance_to(monster["pos"]) < 0.35 and not item["collected"]:
-			_push_log("这个位置已经有物品。")
+	var furniture := _active_storage_furniture()
+	if furniture.is_empty():
+		_push_log("先面向家具按 G 完成冲撞，打开面板后用 R 存取。")
+		return
+	var contents: Array = furniture["contents"]
+	for index in range(contents.size()):
+		var content: Dictionary = contents[index]
+		if content["id"] == treasure["id"]:
+			contents.remove_at(index)
+			_push_log("已从%s取出%s。" % [furniture["kind"], treasure["label"]])
 			return
-	room["items"].append({
-		"id": treasure["id"],
-		"kind": "treasure",
-		"label": treasure["label"],
-		"value": treasure["value"],
-		"pos": monster["pos"],
-		"collected": false,
-	})
+	if _furniture_has_treasure(furniture):
+		_push_log("%s只能存放一件藏品，请先取出原有藏品。" % furniture["kind"])
+		return
+	for room in rooms:
+		for other_furniture in room["furniture"]:
+			for content in other_furniture["contents"]:
+				if content["id"] == treasure["id"]:
+					_push_log("%s已存放在其他家具，请先取出。" % treasure["label"])
+					return
+		for item in room["items"]:
+			if item["id"] == treasure["id"] and not bool(item["collected"]):
+				_push_log("%s已在房间中。" % treasure["label"])
+				return
+	contents.append(treasure.duplicate(true))
+	var room := _room_at(monster["room"])
 	room["traces"].append({"pos": monster["pos"], "role": "monster", "kind": "interact"})
-	_push_log("已放置%s（价值 %d）。" % [treasure["label"], treasure["value"]])
-	for index in range(TREASURES.size()):
-		var candidate: Dictionary = TREASURES[index]
-		var found := false
-		for candidate_room in rooms:
-			for item in candidate_room["items"]:
-				if item["id"] == candidate["id"]:
-					found = true
-		if not found:
-			selected_treasure = index
-			break
+	_push_log("已将%s存入%s（价值 %d）。" % [treasure["label"], furniture["kind"], treasure["value"]])
 
 
 func _thief_search() -> void:
@@ -675,9 +871,9 @@ func _thief_search() -> void:
 	for item in room["items"]:
 		if not item["collected"] and (item["pos"] as Vector2).distance_to(thief["pos"]) <= 0.58:
 			item["collected"] = true
-			if item["kind"] == "treasure":
+			if item["kind"] == "treasure" or item["kind"] == "trinket":
 				loot_value += int(item["value"])
-				_push_log("盗贼取得%s，当前价值 %d。" % [item["label"], loot_value])
+				_push_log("盗贼携带%s，身上价值 %d。" % [item["label"], loot_value])
 			else:
 				pills += 1
 				_push_log("盗贼捡到一颗治疗药丸。")
@@ -688,14 +884,16 @@ func _thief_search() -> void:
 
 
 func _thief_exit() -> void:
-	if phase != "hunt":
+	if phase != "hunt" or has_extracted:
 		return
 	if thief["room"] == ENTRANCE_ROOM and (thief["pos"] as Vector2).distance_to(ENTRANCE_POS) <= 0.58:
+		has_extracted = true
+		extracted_value = loot_value
 		phase = "ended"
-		if loot_value >= 5:
-			outcome = "盗贼成功撤离，带出价值 %d 的藏品。" % loot_value
+		if extracted_value >= 5:
+			outcome = "盗贼完成本局唯一一次撤离，带出价值 %d 的财物。" % extracted_value
 		else:
-			outcome = "盗贼仓促撤离，价值只有 %d，行动失败。" % loot_value
+			outcome = "盗贼已撤离，但带出价值只有 %d，行动失败。" % extracted_value
 	else:
 		_push_log("只有回到入口处才能撤离。")
 
@@ -718,7 +916,7 @@ func _attack() -> void:
 	var same_room: bool = monster["room"] == thief["room"]
 	var vector: Vector2 = thief["pos"] - monster["pos"]
 	var distance := vector.length()
-	var facing := _direction_vector(monster["dir"])
+	var facing: Vector2 = monster.get("facing", _direction_vector(monster["dir"]))
 	var dot := 1.0 if distance == 0.0 else vector.normalized().dot(facing)
 	if same_room and distance <= 2.35 and dot >= cos(PI / 4.0):
 		thief["hp"] -= 1
@@ -817,7 +1015,7 @@ func _draw_topbar(size: Vector2) -> void:
 		["已放置藏品", "%d / 3" % _placed_treasure_count(), TEXT_COLOR],
 		["当前藏品", "%s · %d" % [TREASURES[selected_treasure]["label"], TREASURES[selected_treasure]["value"]], GOLD_COLOR],
 		["盗贼生命", _health_text(int(thief["hp"])), THIEF_COLOR],
-		["盗取价值 / 门槛", "%d / 5" % loot_value, TEXT_COLOR],
+		["携带价值 / 门槛", "%d / 5" % loot_value, TEXT_COLOR],
 		["治疗药丸", str(pills), TEXT_COLOR],
 	]
 	var total_width: float = minf(size.x - 80.0, 1080.0)
@@ -835,8 +1033,12 @@ func _placed_treasure_count() -> int:
 	var count := 0
 	for treasure in TREASURES:
 		for room in rooms:
+			for furniture in room["furniture"]:
+				for content in furniture["contents"]:
+					if content["id"] == treasure["id"]:
+						count += 1
 			for item in room["items"]:
-				if item["id"] == treasure["id"]:
+				if item["id"] == treasure["id"] and not bool(item["collected"]):
 					count += 1
 	return count
 
@@ -868,15 +1070,81 @@ func _draw_room_panel(panel: Rect2, room_rect: Rect2, role: String) -> void:
 		_text_right("移动模式" if drag_mode[role] == "move" else "中心旋转模式", Vector2(panel.end.x - 14, panel.position.y + 47), 10, GOLD_COLOR)
 
 	_draw_room(room_rect, role, room, actor)
+	if role == "monster":
+		_draw_storage_exchange(room_rect)
 	var footer := Rect2(panel.position.x, room_rect.end.y + 10, panel.size.x, panel.end.y - room_rect.end.y - 10)
 	draw_rect(footer, PANEL_ALT)
 	draw_line(footer.position, Vector2(footer.end.x, footer.position.y), LINE_COLOR, 1)
 	var controls := ""
 	if role == "monster":
-		controls = "WASD 移动   G 家具   F 放藏品   R 切换\n空格 挥砍   T 模式   Z/C 家具旋转   Q/E 视角旋转"
+		controls = "WASD 移动   G 向前撞开家具   空格 挥砍   Q/E 视角旋转\n面板内：W/S 选择   R 存入/取出   Esc 关闭"
 	else:
-		controls = "方向键 移动   Num0 家具   Num1 搜查   Num7/9 视角旋转\nNum2 药丸   Num3 模式   Num4/6 家具旋转   Num5 撤离"
+		controls = "方向键 移动   Num0 向前撞击家具   Num1 拾取\nNum2 药丸   Num5 唯一一次撤离   Num7/9 视角旋转"
 	_multiline(controls, footer.position + Vector2(12, 22), footer.size.x - 24, 11, MUTED_COLOR, 19)
+
+
+func _draw_storage_exchange(room_rect: Rect2) -> void:
+	var furniture := _active_storage_furniture()
+	if furniture.is_empty():
+		return
+	var overlay_height := minf(210.0, room_rect.size.y * 0.48)
+	var overlay := Rect2(
+		room_rect.position + Vector2(14.0, room_rect.size.y - overlay_height - 14.0),
+		Vector2(room_rect.size.x - 28.0, overlay_height)
+	)
+	draw_rect(overlay, Color(0.055, 0.062, 0.055, 0.96))
+	draw_rect(overlay, GOLD_COLOR, false, 2.0)
+	var title_rect := Rect2(overlay.position, Vector2(overlay.size.x, 34.0))
+	draw_rect(title_rect, Color("#25271f"))
+	_text("家具已打开 · W/S 选择 · R 存取 · Esc 关闭", title_rect.position + Vector2(12, 22), 11, GOLD_COLOR)
+
+	var gap := 10.0
+	var column_width := (overlay.size.x - 34.0 - gap) / 2.0
+	var left := Rect2(overlay.position + Vector2(12, 44), Vector2(column_width, overlay.size.y - 56))
+	var right := Rect2(Vector2(left.end.x + gap, left.position.y), left.size)
+	draw_rect(left, Color("#151815"))
+	draw_rect(right, Color("#151815"))
+	draw_rect(left, LINE_COLOR, false, 1.0)
+	draw_rect(right, LINE_COLOR, false, 1.0)
+	_text("怪物藏品", left.position + Vector2(10, 20), 11, TEXT_COLOR)
+	_text("家具面板 · %s" % furniture["kind"], right.position + Vector2(10, 20), 11, TEXT_COLOR)
+
+	var row_y := left.position.y + 34.0
+	for index in range(TREASURES.size()):
+		var treasure: Dictionary = TREASURES[index]
+		var row := Rect2(Vector2(left.position.x + 7, row_y - 14), Vector2(left.size.x - 14, 25))
+		if index == selected_treasure:
+			draw_rect(row, Color(0.9, 0.75, 0.24, 0.16))
+			draw_rect(row, GOLD_COLOR, false, 1.0)
+		var status := _treasure_panel_status(str(treasure["id"]), str(furniture["id"]))
+		_text("%s%s · %d" % ["▶ " if index == selected_treasure else "   ", treasure["label"], treasure["value"]], Vector2(row.position.x + 4, row_y + 3), 10, TEXT_COLOR)
+		_text_right(status, Vector2(row.end.x - 4, row_y + 3), 9, GOLD_COLOR if status == "随身" else MUTED_COLOR)
+		row_y += 29.0
+
+	var stored_treasure := "空藏品槽"
+	var trinket_names: Array[String] = []
+	for content in furniture["contents"]:
+		if content["kind"] == "treasure":
+			stored_treasure = "%s · 价值 %d" % [content["label"], content["value"]]
+		elif content["kind"] == "trinket":
+			trinket_names.append("%s · %d" % [content["label"], content["value"]])
+	_text("藏品槽（限 1 件）", right.position + Vector2(10, 43), 9, MUTED_COLOR)
+	_multiline(stored_treasure, right.position + Vector2(10, 62), right.size.x - 20, 10, GOLD_COLOR if stored_treasure != "空藏品槽" else TEXT_COLOR, 16)
+	_text("其他物品", right.position + Vector2(10, 91), 9, MUTED_COLOR)
+	var trinket_text := "无" if trinket_names.is_empty() else "、".join(trinket_names)
+	_multiline(trinket_text, right.position + Vector2(10, 110), right.size.x - 20, 9, TEXT_COLOR, 15)
+
+
+func _treasure_panel_status(treasure_id: String, current_furniture_id: String) -> String:
+	for room in rooms:
+		for furniture in room["furniture"]:
+			for content in furniture["contents"]:
+				if str(content["id"]) == treasure_id:
+					return "本家具" if str(furniture["id"]) == current_furniture_id else "已存放"
+		for item in room["items"]:
+			if str(item["id"]) == treasure_id and not bool(item["collected"]):
+				return "已掉落"
+	return "随身"
 
 
 func _door_label(doors: Array) -> String:
@@ -1017,7 +1285,7 @@ func _draw_center_rail(rect: Rect2) -> void:
 	var rules_y: float = map_rect.end.y + 48.0
 	draw_line(Vector2(rect.position.x, rules_y - 13), Vector2(rect.end.x, rules_y - 13), LINE_COLOR, 1)
 	_text("本局规则", Vector2(rect.position.x + 12, rules_y + 5), 10, MUTED_COLOR)
-	var rules: String = "盗贼行走无声；互动和每 15 秒肚子叫会暴露方向。\n\n噪音仅在曼哈顿房间距离小于 3 时被感知。\n\n红色人形是盗贼移动或操作时留下的短暂残影。\n\n家具会遮住其下方物品。"
+	var rules: String = "怪物一击打开家具并存取藏品；盗贼必须撞到耐久归零。\n\n每件家具有 50% 概率藏有价值 1 的小玩意儿。\n\n财物只有从入口撤离后才结算；每局只能撤离一次。\n\n高价值家具会更明显地左右晃动。"
 	_multiline(rules, Vector2(rect.position.x + 12, rules_y + 27), rect.size.x - 24, 10, MUTED_COLOR, 16)
 
 	var log_y: float = minf(rect.end.y - 190.0, rules_y + 205.0)
@@ -1084,7 +1352,7 @@ func _draw_result_overlay(size: Vector2) -> void:
 	draw_rect(card, Color("#777d73"), false, 1)
 	_text_center("行动结算", Rect2(card.position + Vector2(0, 28), Vector2(card.size.x, 24)), 11, MUTED_COLOR)
 	_multiline(outcome, card.position + Vector2(45, 84), card.size.x - 90, 22, TEXT_COLOR, 32, HORIZONTAL_ALIGNMENT_CENTER)
-	_text_center("盗取价值 %d · 剩余生命 %d" % [loot_value, max(int(thief["hp"]), 0)], Rect2(card.position + Vector2(0, 185), Vector2(card.size.x, 25)), 12, MUTED_COLOR)
+	_text_center("带出价值 %d · 剩余生命 %d" % [extracted_value, max(int(thief["hp"]), 0)], Rect2(card.position + Vector2(0, 185), Vector2(card.size.x, 25)), 12, MUTED_COLOR)
 	result_restart_rect = Rect2(card.position + Vector2(170, 235), Vector2(200, 42))
 	_draw_button(result_restart_rect, "生成新宅邸")
 

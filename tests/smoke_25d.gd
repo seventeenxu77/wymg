@@ -121,5 +121,134 @@ func _run() -> void:
 	renderer._sync_room_layers(game.monster["room"], game.thief["room"])
 	assert(renderer.active_monster_room == game.monster["room"])
 
-	print("2.5D smoke test passed: continuous movement, camera following, and cached room visibility transitions.")
+	assert(is_equal_approx(game.TRINKET_SPAWN_CHANCE, 0.5))
+	for generated_room in game.rooms:
+		for generated_furniture in generated_room["furniture"]:
+			assert(generated_furniture.has("contents"))
+			assert(generated_furniture.has("durability"))
+			for generated_content in generated_furniture["contents"]:
+				assert(generated_content["kind"] == "trinket")
+				assert(int(generated_content["value"]) == 1)
+
+	game.new_game()
+	var storage_room: Dictionary = game._room_at(game.monster["room"])
+	storage_room["furniture"].clear()
+	storage_room["items"].clear()
+	game.monster["pos"] = Vector2(2.5, 2.5)
+	game.monster["dir"] = "right"
+	game.monster["facing"] = Vector2.RIGHT
+	var test_storage := {
+		"id": "test-storage",
+		"kind": "桌子",
+		"pos": Vector2(3.2, 2.5),
+		"rotation": 0.0,
+		"opened": false,
+		"destroyed": false,
+		"damage": 0,
+		"durability": 3,
+		"contents": [],
+		"last_hit_time": -10.0,
+	}
+	storage_room["furniture"].append(test_storage)
+	game._hit_furniture("monster")
+	assert(not (game.furniture_hit_actions["monster"] as Dictionary).is_empty())
+	assert(not bool(test_storage["opened"]))
+	game._update_furniture_hit_actions(game.HIT_WINDUP_TIME * 0.5)
+	assert((game.monster["impact_visual_offset"] as Vector2).dot(Vector2.RIGHT) < 0.0)
+	assert(not bool(test_storage["opened"]))
+	renderer.sync(game.rooms, game.monster, game.thief, game.afterimages, game.dragging, false, game.elapsed)
+	var animated_actor_position := renderer.world_position(
+		game.monster["room"],
+		(game.monster["pos"] as Vector2) + (game.monster["impact_visual_offset"] as Vector2)
+	)
+	assert(renderer.monster_node.position.is_equal_approx(animated_actor_position))
+	game._update_furniture_hit_actions(game.HIT_WINDUP_TIME * 0.5 + game.HIT_LUNGE_TIME + 0.001)
+	assert(bool(test_storage["opened"]))
+	assert(game.active_storage_id == "test-storage")
+	assert(game._active_storage_furniture()["id"] == "test-storage")
+	assert(int(test_storage["damage"]) == 0)
+	assert(is_equal_approx(float(test_storage["last_hit_time"]), game.elapsed))
+	game._update_furniture_hit_actions(game.HIT_RECOVER_TIME)
+	assert((game.monster["impact_visual_offset"] as Vector2).is_zero_approx())
+	var panel_locked_position: Vector2 = game.monster["pos"]
+	game._apply_view_relative_input("monster", Vector2.RIGHT, 0.1)
+	assert((game.monster["pos"] as Vector2).is_equal_approx(panel_locked_position))
+	game.selected_treasure = 0
+	_press_key(game, KEY_S, KEY_S)
+	assert(game.selected_treasure == 1)
+	_press_key(game, KEY_W, KEY_W)
+	assert(game.selected_treasure == 0)
+	_press_key(game, KEY_R, KEY_R)
+	assert(test_storage["contents"].size() == 1)
+	assert(test_storage["contents"][0]["id"] == "treasure-2")
+	assert(renderer._furniture_content_value(test_storage) == 2)
+	renderer.sync(game.rooms, game.monster, game.thief, game.afterimages, game.dragging, false, game.elapsed)
+	var storage_rotation_before: float = (renderer.furniture_nodes["test-storage"] as Node3D).rotation.y
+	renderer.sync(game.rooms, game.monster, game.thief, game.afterimages, game.dragging, false, game.elapsed + 0.07)
+	var storage_rotation_after: float = (renderer.furniture_nodes["test-storage"] as Node3D).rotation.y
+	assert(not is_equal_approx(storage_rotation_before, storage_rotation_after))
+	assert(game.selected_treasure == 0)
+	_press_key(game, KEY_R, KEY_R)
+	assert(test_storage["contents"].is_empty())
+	_press_key(game, KEY_R, KEY_R)
+	assert(test_storage["contents"].size() == 1)
+	assert(test_storage["contents"][0]["id"] == "treasure-2")
+	_press_key(game, KEY_S, KEY_S)
+	assert(game.selected_treasure == 1)
+	_press_key(game, KEY_R, KEY_R)
+	assert(test_storage["contents"].size() == 1)
+	assert(test_storage["contents"][0]["id"] == "treasure-2")
+	game.queue_redraw()
+	await process_frame
+	_press_key(game, KEY_ESCAPE, KEY_ESCAPE)
+	assert(game.active_storage_id == "")
+	test_storage["contents"].append({
+		"id": "test-trinket",
+		"kind": "trinket",
+		"label": "旧怀表",
+		"value": 1,
+	})
+	assert(renderer._furniture_content_value(test_storage) == 3)
+
+	game.phase = "hunt"
+	game.thief["room"] = game.monster["room"]
+	game.thief["pos"] = Vector2(2.5, 2.5)
+	game.thief["dir"] = "right"
+	game.thief["facing"] = Vector2.RIGHT
+	game._hit_furniture("thief")
+	game._update_furniture_hit_actions(game.HIT_WINDUP_TIME + game.HIT_LUNGE_TIME + game.HIT_RECOVER_TIME)
+	game._hit_furniture("thief")
+	game._update_furniture_hit_actions(game.HIT_WINDUP_TIME + game.HIT_LUNGE_TIME + game.HIT_RECOVER_TIME)
+	assert(not bool(test_storage["destroyed"]))
+	assert(int(test_storage["damage"]) == 2)
+	game._hit_furniture("thief")
+	game._update_furniture_hit_actions(game.HIT_WINDUP_TIME + game.HIT_LUNGE_TIME + game.HIT_RECOVER_TIME)
+	assert(bool(test_storage["destroyed"]))
+	assert(test_storage["contents"].is_empty())
+	assert(storage_room["items"].size() == 2)
+	for released_item in storage_room["items"]:
+		game.thief["pos"] = released_item["pos"]
+		game._thief_search()
+	assert(game.loot_value == 3)
+	assert(game.extracted_value == 0)
+
+	game.thief["room"] = game.ENTRANCE_ROOM
+	game.thief["pos"] = game.ENTRANCE_POS
+	game._thief_exit()
+	assert(game.has_extracted)
+	assert(game.extracted_value == 3)
+	assert(game.phase == "ended")
+	game.loot_value = 99
+	game._thief_exit()
+	assert(game.extracted_value == 3)
+
+	print("2.5D smoke test passed: movement, room visibility, storage damage, loot carrying, and one-time extraction.")
 	quit(0)
+
+
+func _press_key(game: Node, key: Key, physical: Key) -> void:
+	var event := InputEventKey.new()
+	event.pressed = true
+	event.keycode = key
+	event.physical_keycode = physical
+	game._input(event)

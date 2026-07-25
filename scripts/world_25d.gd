@@ -293,6 +293,7 @@ func _create_furniture_node(room: Vector2i, furniture: Dictionary) -> void:
 	node.name = str(furniture["id"])
 	level_root.add_child(node)
 	var base := MeshInstance3D.new()
+	base.name = "Base"
 	var mesh := BoxMesh.new()
 	var kind: String = furniture["kind"]
 	if kind == "沙发":
@@ -331,6 +332,18 @@ func _create_furniture_node(room: Vector2i, furniture: Dictionary) -> void:
 	sprite.billboard = BaseMaterial3D.BILLBOARD_ENABLED
 	_register_room_visual(room, sprite)
 	node.add_child(sprite)
+	var state_label := Label3D.new()
+	state_label.name = "StateLabel"
+	state_label.font_size = 30
+	state_label.pixel_size = 0.005
+	state_label.position = Vector3(0, 1.42, 0)
+	state_label.modulate = Color("#f0d773")
+	state_label.outline_modulate = Color("#171814")
+	state_label.outline_size = 5
+	state_label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	state_label.no_depth_test = true
+	_register_room_visual(room, state_label)
+	node.add_child(state_label)
 	node.position = world_position(room, furniture["pos"])
 	node.rotation.y = -deg_to_rad(float(furniture["rotation"]))
 	furniture_nodes[furniture["id"]] = node
@@ -342,12 +355,12 @@ func _create_item_node(room: Vector2i, item: Dictionary) -> void:
 	level_root.add_child(node)
 	var sprite := Sprite3D.new()
 	sprite.texture = load("res://assets/25d/pill.svg" if item["kind"] == "pill" else "res://assets/25d/treasure.svg")
-	sprite.pixel_size = 0.0048 if item["kind"] == "pill" else 0.0055
+	sprite.pixel_size = 0.0048 if item["kind"] == "pill" else (0.0046 if item["kind"] == "trinket" else 0.0055)
 	sprite.position.y = 0.42
 	sprite.billboard = BaseMaterial3D.BILLBOARD_ENABLED
 	_register_room_visual(room, sprite)
 	node.add_child(sprite)
-	if item["kind"] == "treasure":
+	if item["kind"] == "treasure" or item["kind"] == "trinket":
 		var value_label := Label3D.new()
 		value_label.text = str(item["value"])
 		value_label.font_size = 36
@@ -396,9 +409,29 @@ func sync(rooms: Array, monster: Dictionary, thief: Dictionary, afterimages: Arr
 				_create_furniture_node(coord, furniture)
 			var furniture_node: Node3D = furniture_nodes[furniture_id]
 			furniture_node.position = world_position(coord, furniture["pos"])
-			furniture_node.rotation.y = -deg_to_rad(float(furniture["rotation"]))
+			var content_value := _furniture_content_value(furniture)
+			var shake_degrees := 0.0
+			if not bool(furniture.get("destroyed", false)) and content_value > 0:
+				shake_degrees = minf(1.2 + float(content_value) * 1.25, 11.0)
+			if time - float(furniture.get("last_hit_time", -10.0)) < 0.48:
+				shake_degrees = maxf(shake_degrees, 13.0)
+			var phase := float(abs(str(furniture_id).hash()) % 628) / 100.0
+			furniture_node.rotation.y = -deg_to_rad(float(furniture["rotation"])) + deg_to_rad(sin(time * 5.2 + phase) * shake_degrees)
+			furniture_node.scale = Vector3(1.0, 0.5, 1.0) if bool(furniture.get("destroyed", false)) else Vector3.ONE
 			var ring: MeshInstance3D = furniture_node.get_node("SelectionRing")
 			ring.visible = selected["monster"] == furniture_id or selected["thief"] == furniture_id
+			var state_label: Label3D = furniture_node.get_node("StateLabel")
+			if bool(furniture.get("destroyed", false)):
+				state_label.text = "已损毁"
+				state_label.modulate = Color("#c97868")
+			elif int(furniture.get("damage", 0)) > 0:
+				state_label.text = "%d / %d" % [furniture["damage"], furniture["durability"]]
+				state_label.modulate = Color("#e99a66")
+			elif bool(furniture.get("opened", false)):
+				state_label.text = "可存取"
+				state_label.modulate = Color("#f0d773")
+			else:
+				state_label.text = ""
 		for item in room["items"]:
 			var item_id: String = item["id"]
 			if not item_nodes.has(item_id):
@@ -412,8 +445,16 @@ func sync(rooms: Array, monster: Dictionary, thief: Dictionary, afterimages: Arr
 	_sync_room_layers(monster["room"], thief["room"])
 
 
+func _furniture_content_value(furniture: Dictionary) -> int:
+	var total := 0
+	for content in furniture.get("contents", []):
+		total += int(content.get("value", 0))
+	return total
+
+
 func _sync_actor(node: Node3D, actor: Dictionary, time: float, is_thief: bool) -> void:
-	node.position = world_position(actor["room"], actor["pos"])
+	var visual_pos: Vector2 = actor["pos"] + actor.get("impact_visual_offset", Vector2.ZERO)
+	node.position = world_position(actor["room"], visual_pos)
 	var sprite: Sprite3D = node.get_node("PaperSprite")
 	var dir: String = actor["dir"]
 	sprite.flip_h = dir == "left"
@@ -586,6 +627,8 @@ func _apply_room_layer(room: Vector2i, layer: int) -> void:
 
 func _item_hidden(room: Dictionary, item: Dictionary) -> bool:
 	for furniture in room["furniture"]:
+		if bool(furniture.get("destroyed", false)):
+			continue
 		var furniture_pos: Vector2 = furniture["pos"]
 		var item_pos: Vector2 = item["pos"]
 		if furniture_pos.distance_to(item_pos) < 0.44:
