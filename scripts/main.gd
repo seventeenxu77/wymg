@@ -78,6 +78,8 @@ var logs: Array[String] = []
 var restart_rect := Rect2()
 var early_rect := Rect2()
 var result_restart_rect := Rect2()
+var help_open := {"monster": false, "thief": false}
+var help_rects := {"monster": Rect2(), "thief": Rect2()}
 
 var font: Font
 var world_25d: World25D
@@ -120,6 +122,10 @@ func new_game() -> void:
 	last_afterimage_at = -10.0
 	outcome = ""
 	result_restart_rect = Rect2()
+	help_open = {"monster": false, "thief": false}
+	help_rects = {"monster": Rect2(), "thief": Rect2()}
+	restart_rect = Rect2()
+	early_rect = Rect2()
 	logs = ["藏宝阶段开始：怪物持有 3 件藏品。"]
 	if world_25d:
 		world_25d.rebuild(rooms)
@@ -207,6 +213,8 @@ func _handle_continuous_input(delta: float) -> void:
 func _apply_view_relative_input(role: String, screen_input: Vector2, delta: float) -> void:
 	if screen_input.is_zero_approx():
 		return
+	if bool(help_open[role]):
+		return
 	if not (furniture_hit_actions[role] as Dictionary).is_empty():
 		return
 	if role == "monster" and not _active_storage_furniture().is_empty():
@@ -221,6 +229,11 @@ func _input(event: InputEvent) -> void:
 	if Engine.is_editor_hint():
 		return
 	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT and event.pressed:
+		for role in ["monster", "thief"]:
+			if (help_rects[role] as Rect2).has_point(event.position):
+				help_open[role] = not bool(help_open[role])
+				get_viewport().set_input_as_handled()
+				return
 		if restart_rect.has_point(event.position) or result_restart_rect.has_point(event.position):
 			new_game()
 			return
@@ -233,6 +246,18 @@ func _input(event: InputEvent) -> void:
 	var physical: Key = event.physical_keycode
 	if key == KEY_F2:
 		new_game()
+		return
+	if key == KEY_F1:
+		help_open["monster"] = not bool(help_open["monster"])
+		return
+	if key == KEY_KP_ADD:
+		help_open["thief"] = not bool(help_open["thief"])
+		return
+	if key == KEY_ESCAPE and (bool(help_open["monster"]) or bool(help_open["thief"])):
+		help_open["monster"] = false
+		help_open["thief"] = false
+		return
+	if _help_blocks_key(key, physical):
 		return
 	if _handle_storage_panel_input(key, physical):
 		get_viewport().set_input_as_handled()
@@ -263,6 +288,19 @@ func _input(event: InputEvent) -> void:
 	elif key == KEY_KP_9:
 		if world_25d:
 			world_25d.rotate_camera("thief", 1)
+
+
+func _help_blocks_key(key: Key, physical: Key) -> bool:
+	if bool(help_open["monster"]) and physical in [
+		KEY_W, KEY_A, KEY_S, KEY_D, KEY_Q, KEY_E, KEY_G, KEY_R, KEY_SPACE,
+	]:
+		return true
+	if bool(help_open["thief"]) and key in [
+		KEY_UP, KEY_DOWN, KEY_LEFT, KEY_RIGHT,
+		KEY_KP_0, KEY_KP_1, KEY_KP_2, KEY_KP_5, KEY_KP_7, KEY_KP_9,
+	]:
+		return true
+	return false
 
 
 func _handle_storage_panel_input(key: Key, physical: Key) -> bool:
@@ -949,10 +987,8 @@ func _direction_vector(dir: String) -> Vector2:
 func _draw() -> void:
 	var size := get_viewport_rect().size
 	draw_rect(Rect2(Vector2.ZERO, size), BG_COLOR)
-	_draw_topbar(size)
 	var layout := _calculate_layout(size)
 	_draw_room_panel(layout["monster_panel"], layout["monster_room"], "monster")
-	_draw_center_rail(layout["center"])
 	_draw_room_panel(layout["thief_panel"], layout["thief_room"], "thief")
 	if phase == "ready":
 		_draw_countdown_overlay(size)
@@ -961,98 +997,32 @@ func _draw() -> void:
 
 
 func _calculate_layout(size: Vector2) -> Dictionary:
-	var body_top: float = 146.0
-	var margin: float = 18.0
-	var gap: float = 14.0
-	var center_width: float = clampf(size.x * 0.14, 205.0, 230.0)
-	var side_width: float = (size.x - margin * 2.0 - center_width - gap * 2.0) / 2.0
-	var panel_height: float = size.y - body_top - 18.0
-	var room_side: float = minf(side_width - 34.0, panel_height - 132.0)
+	var margin := 10.0
+	var gap := 10.0
+	var side_width := (size.x - margin * 2.0 - gap) / 2.0
+	var panel_height := size.y - margin * 2.0
+	var room_side := minf(side_width - 18.0, panel_height - 136.0)
 	room_side = maxf(room_side, 280.0)
-	var left_panel := Rect2(margin, body_top, side_width, panel_height)
-	var center := Rect2(margin + side_width + gap, body_top, center_width, panel_height)
-	var right_panel := Rect2(center.end.x + gap, body_top, side_width, panel_height)
+	var left_panel := Rect2(margin, margin, side_width, panel_height)
+	var right_panel := Rect2(left_panel.end.x + gap, margin, side_width, panel_height)
 	var left_room := Rect2(
 		left_panel.position.x + (side_width - room_side) / 2.0,
-		body_top + 58.0,
+		left_panel.position.y + 48.0,
 		room_side,
 		room_side
 	)
 	var right_room := Rect2(
 		right_panel.position.x + (side_width - room_side) / 2.0,
-		body_top + 58.0,
+		right_panel.position.y + 48.0,
 		room_side,
 		room_side
 	)
 	return {
 		"monster_panel": left_panel,
 		"monster_room": left_room,
-		"center": center,
 		"thief_panel": right_panel,
 		"thief_room": right_room,
 	}
-
-
-func _draw_topbar(size: Vector2) -> void:
-	draw_rect(Rect2(0, 0, size.x, 76), Color("#0d0f0e"))
-	draw_line(Vector2(0, 76), Vector2(size.x, 76), LINE_COLOR, 1)
-	draw_rect(Rect2(24, 16, 56, 42), Color.TRANSPARENT, false, 1.5)
-	_text("WB-01", Vector2(34, 42), 11, MUTED_COLOR)
-	_text("老宅窃影", Vector2(96, 36), 24, TEXT_COLOR)
-	_text("双视角 2.5D 纸片宅邸 · 随机 36 房间", Vector2(96, 57), 12, MUTED_COLOR)
-
-	var phase_title := ""
-	match phase:
-		"hide": phase_title = "怪物藏宝  %d:%02d" % [seconds_left / 60, seconds_left % 60]
-		"ready": phase_title = "双方准备  %d" % seconds_left
-		"hunt": phase_title = "实时搜查"
-		_: phase_title = "本局结束"
-	_text("当前阶段", Vector2(size.x * 0.5 - 58, 29), 10, MUTED_COLOR)
-	_text(phase_title, Vector2(size.x * 0.5 - 58, 51), 16, TEXT_COLOR)
-
-	restart_rect = Rect2(size.x - 172, 19, 148, 38)
-	_draw_button(restart_rect, "重新生成一局")
-	early_rect = Rect2(size.x - 355, 19, 170, 38) if phase == "hide" else Rect2()
-	if phase == "hide":
-		_draw_button(early_rect, "提前结束藏宝", true)
-
-	draw_rect(Rect2(0, 77, size.x, 55), PANEL_ALT)
-	draw_line(Vector2(0, 132), Vector2(size.x, 132), LINE_COLOR, 1)
-	var stats := [
-		["怪物生命", "♥ ♥", MONSTER_COLOR],
-		["已放置藏品", "%d / 3" % _placed_treasure_count(), TEXT_COLOR],
-		["当前藏品", "%s · %d" % [TREASURES[selected_treasure]["label"], TREASURES[selected_treasure]["value"]], GOLD_COLOR],
-		["盗贼生命", _health_text(int(thief["hp"])), THIEF_COLOR],
-		["携带价值 / 门槛", "%d / 5" % loot_value, TEXT_COLOR],
-		["治疗药丸", str(pills), TEXT_COLOR],
-	]
-	var total_width: float = minf(size.x - 80.0, 1080.0)
-	var start_x: float = (size.x - total_width) / 2.0
-	var stat_width: float = total_width / float(stats.size())
-	for index in range(stats.size()):
-		var x: float = start_x + index * stat_width
-		if index > 0:
-			draw_line(Vector2(x, 85), Vector2(x, 124), Color("#30332f"), 1)
-		_text(stats[index][0], Vector2(x + 14, 100), 10, MUTED_COLOR)
-		_text(stats[index][1], Vector2(x + 14, 120), 14, stats[index][2])
-
-
-func _placed_treasure_count() -> int:
-	var count := 0
-	for treasure in TREASURES:
-		for room in rooms:
-			for furniture in room["furniture"]:
-				for content in furniture["contents"]:
-					if content["id"] == treasure["id"]:
-						count += 1
-			for item in room["items"]:
-				if item["id"] == treasure["id"] and not bool(item["collected"]):
-					count += 1
-	return count
-
-
-func _health_text(value: int) -> String:
-	return "♥ ".repeat(max(value, 0)) + "♡ ".repeat(max(2 - value, 0))
 
 
 func _draw_button(rect: Rect2, label: String, secondary := false) -> void:
@@ -1070,25 +1040,73 @@ func _draw_room_panel(panel: Rect2, room_rect: Rect2, role: String) -> void:
 	draw_rect(panel, PANEL_COLOR)
 	draw_rect(panel, LINE_COLOR, false, 1)
 	draw_line(panel.position, Vector2(panel.end.x, panel.position.y), accent, 3)
-	_text("怪物视角" if role == "monster" else "盗贼视角", panel.position + Vector2(14, 21), 10, MUTED_COLOR)
-	_text("房间 %d-%d" % [actor["room"].x + 1, actor["room"].y + 1], panel.position + Vector2(14, 44), 17, TEXT_COLOR)
-	var door_text := "门型 %d · %s" % [room["doors"].size(), _door_label(room["doors"])]
-	_text_right(door_text, Vector2(panel.end.x - 14, panel.position.y + 29), 11, MUTED_COLOR)
-	if dragging[role] != "":
-		_text_right("移动模式" if drag_mode[role] == "move" else "中心旋转模式", Vector2(panel.end.x - 14, panel.position.y + 47), 10, GOLD_COLOR)
+	_text("怪物视角" if role == "monster" else "盗贼视角", panel.position + Vector2(12, 20), 10, MUTED_COLOR)
+	_text("房间 %d-%d · %s" % [actor["room"].x + 1, actor["room"].y + 1, _phase_short_label()], panel.position + Vector2(12, 39), 14, TEXT_COLOR)
+	var help_rect := Rect2(Vector2(panel.end.x - 40, panel.position.y + 9), Vector2(28, 28))
+	help_rects[role] = help_rect
+	draw_rect(help_rect, Color("#252925"))
+	draw_rect(help_rect, accent, false, 1.5)
+	_text_center("?", help_rect, 16, accent)
 
 	_draw_room(room_rect, role, room, actor)
 	if role == "monster":
 		_draw_storage_exchange(room_rect)
+	_draw_view_minimap(room_rect, role)
+	if bool(help_open[role]):
+		_draw_help_overlay(room_rect, role)
 	var footer := Rect2(panel.position.x, room_rect.end.y + 10, panel.size.x, panel.end.y - room_rect.end.y - 10)
 	draw_rect(footer, PANEL_ALT)
 	draw_line(footer.position, Vector2(footer.end.x, footer.position.y), LINE_COLOR, 1)
 	var controls := ""
 	if role == "monster":
-		controls = "WASD 移动   G 向前撞开家具   空格 挥砍   Q/E 视角旋转\n面板内：W/S 选择   R 存入/取出   Esc 关闭"
+		controls = "WASD 移动  G 撞击  空格 攻击  Q/E 视角  Tab 地图  F1 帮助\n家具面板：W/S 选择  R 存取  Esc 关闭"
 	else:
-		controls = "方向键 移动   Num0 向前撞击家具   Num1 拾取\nNum2 药丸   Num5 唯一一次撤离   Num7/9 视角旋转"
+		controls = "方向键 移动  Num0 撞击  Num1 拾取  Num2 药丸  Num5 撤离\nNum7/9 视角  按住 Num8 地图  Num+ 帮助"
 	_multiline(controls, footer.position + Vector2(12, 22), footer.size.x - 24, 11, MUTED_COLOR, 19)
+
+
+func _phase_short_label() -> String:
+	match phase:
+		"hide": return "藏宝 %d:%02d" % [seconds_left / 60, seconds_left % 60]
+		"ready": return "准备 %d" % seconds_left
+		"hunt": return "实时搜查"
+		_: return "本局结束"
+
+
+func _draw_view_minimap(room_rect: Rect2, role: String) -> void:
+	var expanded := _map_expanded(role)
+	var map_size := clampf(room_rect.size.x * 0.2, 92.0, 124.0)
+	var map_rect := Rect2(room_rect.position + Vector2(14, 14), Vector2(map_size, map_size))
+	if expanded:
+		map_size = minf(room_rect.size.x, room_rect.size.y) * 0.72
+		map_rect = Rect2(room_rect.get_center() - Vector2.ONE * map_size / 2.0, Vector2.ONE * map_size)
+	draw_rect(map_rect.grow(7), Color(0.035, 0.04, 0.035, 0.94))
+	draw_rect(map_rect.grow(7), MONSTER_COLOR if role == "monster" else THIEF_COLOR, false, 1.5)
+	_draw_minimap(map_rect)
+	if not expanded:
+		_text("TAB" if role == "monster" else "N8", map_rect.position + Vector2(4, 12), 8, Color(1, 1, 1, 0.7))
+
+
+func _map_expanded(role: String) -> bool:
+	return Input.is_key_pressed(KEY_TAB) if role == "monster" else Input.is_key_pressed(KEY_KP_8)
+
+
+func _draw_help_overlay(room_rect: Rect2, role: String) -> void:
+	var accent := MONSTER_COLOR if role == "monster" else THIEF_COLOR
+	var card := room_rect.grow(-42)
+	draw_rect(card, Color(0.035, 0.04, 0.035, 0.97))
+	draw_rect(card, accent, false, 2.0)
+	_text_center("本局规则", Rect2(card.position + Vector2(0, 20), Vector2(card.size.x, 28)), 20, TEXT_COLOR)
+	var rules := (
+		"· 怪物一击打开家具；盗贼必须撞到耐久归零。\n\n"
+		+ "· 每件家具最多存一件正式藏品，并有 50% 概率藏有小玩意儿。\n\n"
+		+ "· 财物只有从入口撤离后才结算，每局只能撤离一次。\n\n"
+		+ "· 高价值家具晃动更明显；撞击和操作会制造噪音。\n\n"
+		+ "· 双方视角、移动键、地图与帮助界面彼此独立。"
+	)
+	_multiline(rules, card.position + Vector2(34, 78), card.size.x - 68, 12, MUTED_COLOR, 21)
+	var close_label := "F1 / Esc 关闭" if role == "monster" else "Num+ / Esc 关闭"
+	_text_center(close_label, Rect2(Vector2(card.position.x, card.end.y - 48), Vector2(card.size.x, 25)), 11, accent)
 
 
 func _draw_storage_exchange(room_rect: Rect2) -> void:
@@ -1278,33 +1296,6 @@ func _draw_noise_directions(rect: Rect2, role: String, actor: Dictionary) -> voi
 		var fade: float = clampf((float(noise["expires"]) - elapsed) / 2.0, 0.0, 1.0)
 		for radius in [25.0, 42.0, 59.0]:
 			draw_arc(origin, radius, angle - 0.58, angle + 0.58, 12, Color(color, fade), 2)
-
-
-func _draw_center_rail(rect: Rect2) -> void:
-	draw_rect(rect, PANEL_COLOR)
-	draw_rect(rect, LINE_COLOR, false, 1)
-	_text("全宅结构", rect.position + Vector2(12, 22), 10, MUTED_COLOR)
-	var map_size: float = minf(rect.size.x - 24.0, 198.0)
-	var map_rect := Rect2(rect.position + Vector2((rect.size.x - map_size) / 2.0, 38), Vector2(map_size, map_size))
-	_draw_minimap(map_rect)
-	_text("● 怪物", map_rect.position + Vector2(4, map_size + 19), 10, MONSTER_COLOR)
-	_text_right("● 盗贼", map_rect.position + Vector2(map_size - 4, map_size + 19), 10, THIEF_COLOR)
-
-	var rules_y: float = map_rect.end.y + 48.0
-	draw_line(Vector2(rect.position.x, rules_y - 13), Vector2(rect.end.x, rules_y - 13), LINE_COLOR, 1)
-	_text("本局规则", Vector2(rect.position.x + 12, rules_y + 5), 10, MUTED_COLOR)
-	var rules: String = "怪物一击打开家具并存取藏品；盗贼必须撞到耐久归零。\n\n每件家具有 50% 概率藏有价值 1 的小玩意儿。\n\n财物只有从入口撤离后才结算；每局只能撤离一次。\n\n高价值家具会更明显地左右晃动。"
-	_multiline(rules, Vector2(rect.position.x + 12, rules_y + 27), rect.size.x - 24, 10, MUTED_COLOR, 16)
-
-	var log_y: float = minf(rect.end.y - 190.0, rules_y + 205.0)
-	draw_line(Vector2(rect.position.x, log_y), Vector2(rect.end.x, log_y), LINE_COLOR, 1)
-	_text("事件记录", Vector2(rect.position.x + 12, log_y + 22), 10, MUTED_COLOR)
-	var cursor: float = log_y + 43.0
-	for entry in logs:
-		_multiline("· " + entry, Vector2(rect.position.x + 12, cursor), rect.size.x - 24, 9, Color("#b2b5af"), 14)
-		cursor += 33.0
-		if cursor > rect.end.y - 10:
-			break
 
 
 func _draw_minimap(rect: Rect2) -> void:
