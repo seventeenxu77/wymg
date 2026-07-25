@@ -48,6 +48,11 @@ func _run() -> void:
 	assert(ui_layout["thief_panel"].position.x - ui_layout["monster_panel"].end.x <= 10.0)
 	assert(ui_layout["monster_room"].size.x >= 640.0)
 	assert(ui_layout["thief_room"].size == ui_layout["monster_room"].size)
+	game.queue_redraw()
+	await process_frame
+	assert(game.early_rect.has_area())
+	var actual_ui_layout: Dictionary = game._calculate_layout(game.get_viewport_rect().size)
+	assert(actual_ui_layout["monster_panel"].encloses(game.early_rect))
 	_press_key(game, KEY_F1, KEY_F1)
 	assert(bool(game.help_open["monster"]))
 	assert(not bool(game.help_open["thief"]))

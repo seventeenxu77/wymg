@@ -1047,6 +1047,11 @@ func _draw_room_panel(panel: Rect2, room_rect: Rect2, role: String) -> void:
 	draw_rect(help_rect, Color("#252925"))
 	draw_rect(help_rect, accent, false, 1.5)
 	_text_center("?", help_rect, 16, accent)
+	if role == "monster" and phase == "hide":
+		early_rect = Rect2(Vector2(help_rect.position.x - 126, panel.position.y + 9), Vector2(116, 28))
+		_draw_button(early_rect, "提前结束藏宝", true)
+	elif role == "monster":
+		early_rect = Rect2()
 
 	_draw_room(room_rect, role, room, actor)
 	if role == "monster":
@@ -1059,7 +1064,7 @@ func _draw_room_panel(panel: Rect2, room_rect: Rect2, role: String) -> void:
 	draw_line(footer.position, Vector2(footer.end.x, footer.position.y), LINE_COLOR, 1)
 	var controls := ""
 	if role == "monster":
-		controls = "WASD 移动  G 撞击  空格 攻击  Q/E 视角  Tab 地图  F1 帮助\n家具面板：W/S 选择  R 存取  Esc 关闭"
+		controls = "WASD 移动  G 撞击  空格 攻击  Q/E 视角  Tab 地图  F1 帮助\nH 结束藏宝  |  家具面板：W/S 选择  R 存取  Esc 关闭"
 	else:
 		controls = "方向键 移动  Num0 撞击  Num1 拾取  Num2 药丸  Num5 撤离\nNum7/9 视角  按住 Num8 地图  Num+ 帮助"
 	_multiline(controls, footer.position + Vector2(12, 22), footer.size.x - 24, 11, MUTED_COLOR, 19)
