@@ -762,11 +762,12 @@ func _item_visual_info(item: Dictionary) -> Dictionary:
 	var kind := str(item.get("kind", ""))
 	if kind == "pill":
 		return {"path": "res://assets/25d/pill.svg", "pixel_size": 0.0048}
-	if kind == "treasure" or kind == "trinket":
-		return {
-			"path": "res://GJGamejam素材/2.5D物品/红宝石.png",
-			"pixel_size": 0.0084 if kind == "trinket" else 0.01006,
-		}
+	if kind == "treasure":
+		if int(item.get("value", 0)) <= 1:
+			return {"path": "res://GJGamejam素材/2.5D物品/copper_coin.png", "pixel_size": 0.0075}
+		return {"path": "res://GJGamejam素材/2.5D物品/红宝石.png", "pixel_size": 0.01006}
+	if kind == "trinket":
+		return {"path": "res://GJGamejam素材/2.5D物品/红宝石.png", "pixel_size": 0.0084}
 	var tool_type := str(item.get("tool_type", item.get("device_type", "")))
 	match tool_type:
 		"trap":
@@ -780,17 +781,17 @@ func _item_visual_info(item: Dictionary) -> Dictionary:
 				"pixel_size": 0.00262 if character_role == "monster" else 0.00270,
 			}
 		"alarm":
-			return {"path": "res://GJGamejam素材/2.5D物品/白蜡烛燃烧.png", "pixel_size": 0.0062}
+			return {"path": "res://GJGamejam素材/2.5D物品/s2_alarm_clean.png", "pixel_size": 0.0062}
 		"phonograph":
-			return {"path": "res://GJGamejam素材/2.5D物品/r3_chest_clean.png", "pixel_size": 0.0105}
+			return {"path": "res://GJGamejam素材/2.5D物品/s2_gramo_clean.png", "pixel_size": 0.0105}
 		"teleporter":
 			return {"path": "res://GJGamejam素材/2.5D物品/红宝石.png", "pixel_size": 0.01006, "color": Color("#6ed5ff")}
 		"adrenaline":
-			return {"path": "res://assets/25d/pill.svg", "pixel_size": 0.0048, "color": Color("#ef5a67")}
+			return {"path": "res://GJGamejam素材/2.5D物品/s2_adren_clean.png", "pixel_size": 0.0062}
 		"spring_glove":
-			return {"path": "res://GJGamejam素材/2.5D物品/钥匙.png", "pixel_size": 0.0062, "color": Color("#f3cc62")}
+			return {"path": "res://GJGamejam素材/2.5D物品/gm2_glove_clean.png", "pixel_size": 0.0062}
 		"detector":
-			return {"path": "res://GJGamejam素材/2.5D物品/钥匙.png", "pixel_size": 0.0062, "color": Color("#78d7e8")}
+			return {"path": "res://GJGamejam素材/2.5D物品/gm2_detector_clean.png", "pixel_size": 0.0062}
 		_:
 			return {"path": "res://GJGamejam素材/2.5D物品/玩偶.png", "pixel_size": 0.0062}
 
@@ -826,6 +827,8 @@ func sync(rooms: Array, monster: Dictionary, thief: Dictionary, afterimages: Arr
 		or monster.is_empty()
 		or thief.is_empty()
 	):
+		return
+	if not monster_node or not thief_node or not monster_camera or not thief_camera:
 		return
 	_sync_actor(monster_node, monster, time, false)
 	_sync_actor(thief_node, thief, time, true)
@@ -943,6 +946,8 @@ func _furniture_content_value(furniture: Dictionary) -> int:
 
 
 func _sync_actor(node: Node3D, actor: Dictionary, time: float, is_thief: bool) -> void:
+	if not node or not is_instance_valid(node):
+		return
 	var visual_pos: Vector2 = actor["pos"] + actor.get("impact_visual_offset", Vector2.ZERO)
 	node.position = world_position(actor["room"], visual_pos)
 	var pivot: Node3D = node.get_node_or_null("SwayPivot")
@@ -973,6 +978,8 @@ func _sync_actor(node: Node3D, actor: Dictionary, time: float, is_thief: bool) -
 
 
 func _set_actor_visual_layers(node: Node, layers: int) -> void:
+	if not node or not is_instance_valid(node):
+		return
 	for child in node.get_children():
 		if child is VisualInstance3D:
 			(child as VisualInstance3D).layers = layers
@@ -980,6 +987,8 @@ func _set_actor_visual_layers(node: Node, layers: int) -> void:
 
 
 func _follow_camera(camera: Camera3D, actor: Dictionary, role: String) -> void:
+	if not camera or not is_instance_valid(camera):
+		return
 	var target := world_position(actor["room"], actor["pos"], 0.38)
 	# Zero degrees is deliberately aligned with the room axes:
 	# screen right = world +X, screen up = world -Z.
@@ -1002,6 +1011,8 @@ func camera_relative_vector(role: String, screen_input: Vector2) -> Vector2:
 
 
 func _sync_attack(monster: Dictionary, active: bool) -> void:
+	if not attack_cone or not is_instance_valid(attack_cone):
+		return
 	attack_cone.visible = active
 	if not active:
 		return

@@ -242,9 +242,12 @@ func _run() -> void:
 			assert(generated_furniture.has("durability"))
 			assert(int(generated_furniture["durability"]) == game._effective_furniture_durability(generated_furniture))
 			for generated_content in generated_furniture["contents"]:
-				assert(str(generated_content["kind"]) in ["trinket", "tool"])
+				assert(str(generated_content["kind"]) in ["treasure", "trinket", "tool"])
 				if generated_content["kind"] == "trinket":
 					assert(int(generated_content["value"]) == 1)
+				elif generated_content["kind"] == "treasure":
+					assert(int(generated_content["value"]) == 1)
+					assert(str(generated_content["id"]).begins_with("wild-treasure-"))
 				else:
 					assert(str(generated_content["tool_type"]) == "adrenaline")
 

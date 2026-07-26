@@ -77,6 +77,8 @@ const TREASURES := [
 ]
 
 const TRINKETS := ["旧怀表", "银汤匙", "铜制烟盒", "珍珠纽扣"]
+const WILD_TREASURE_COUNT := 10
+const WILD_TREASURE := {"id": "treasure-1", "kind": "treasure", "label": "古铜币", "value": 1}
 
 const TOOL_DEFS := {
 	"detector": {
@@ -835,6 +837,24 @@ func _generate_rooms() -> Array:
 				"contents": contents,
 				"last_hit_time": -10.0,
 			})
+
+	# Place wild common treasures in random furniture
+	var all_furniture: Array = []
+	for room in generated:
+		for furniture in room["furniture"]:
+			all_furniture.append(furniture)
+	_shuffle_with_rng(all_furniture)
+	var wild_placed := 0
+	for furniture in all_furniture:
+		if wild_placed >= WILD_TREASURE_COUNT:
+			break
+		if _furniture_has_treasure(furniture):
+			continue
+		var wild_treasure := WILD_TREASURE.duplicate(true)
+		wild_treasure["id"] = "wild-treasure-%d-%d" % [current_round, wild_placed]
+		furniture["contents"].append(wild_treasure)
+		_refresh_furniture_durability(furniture)
+		wild_placed += 1
 
 	var visible_room_keys: Dictionary = {}
 	for index in range(PILL_SPAWN_COUNT):

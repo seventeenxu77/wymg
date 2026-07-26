@@ -16,6 +16,7 @@ func _initialize() -> void:
 	var ground_pills := 0
 	var ground_tools := 0
 	var hidden_adrenaline := 0
+	var wild_treasure_ids: Dictionary = {}
 	for room in game.rooms:
 		for item in room["items"]:
 			if str(item.get("kind", "")) == "pill":
@@ -27,9 +28,19 @@ func _initialize() -> void:
 				if str(content.get("kind", "")) == "tool":
 					assert(str(content.get("tool_type", "")) == "adrenaline")
 					hidden_adrenaline += 1
+				elif (
+					str(content.get("kind", "")) == "treasure"
+					and int(content.get("value", 0)) == 1
+				):
+					var wild_id := str(content.get("id", ""))
+					assert(wild_id.begins_with("wild-treasure-"))
+					assert(not wild_treasure_ids.has(wild_id))
+					wild_treasure_ids[wild_id] = true
+			assert(int(furniture["durability"]) == game._effective_furniture_durability(furniture))
 	assert(ground_pills == game.PILL_SPAWN_COUNT)
 	assert(ground_tools == 0)
 	assert(hidden_adrenaline == game.HIDDEN_ADRENALINE_COUNT)
+	assert(wild_treasure_ids.size() == game.WILD_TREASURE_COUNT)
 
 	var valuable_furniture := {
 		"base_durability": 3,
