@@ -3,8 +3,8 @@ render_mode unshaded, blend_mix, cull_disabled, depth_draw_never;
 
 uniform vec3 player_position = vec3(0.0, 0.0, 0.0);
 uniform float fade_start : hint_range(0.0, 20.0) = 2.5;
-uniform float fade_end : hint_range(0.0, 20.0) = 16.0;
-uniform float max_alpha : hint_range(0.0, 1.0) = 0.55;
+uniform float fade_end : hint_range(0.0, 20.0) = 12.0;
+uniform float max_alpha : hint_range(0.0, 1.0) = 0.75;
 
 varying vec3 world_pos;
 
