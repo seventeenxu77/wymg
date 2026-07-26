@@ -1,0 +1,921 @@
+﻿@tool
+class_name GameHud
+extends Node2D
+
+# The HUD is a pure presentation adapter. It reads game state from the host
+# coordinator and only writes screen hit rectangles used by input handling.
+
+const MAP_SIZE := 6
+const ROOM_SIZE := 5.0
+const TOOL_INVENTORY_CAPACITY := 3
+const TRAP_ESCAPE_PRESSES := 20
+const PICKUP_DISTANCE := 0.64
+const MATCH_ROUNDS := 4
+
+const MONSTER_COLOR := Color("#ff6b4a")
+const THIEF_COLOR := Color("#66d9c3")
+const BG_COLOR := Color("#0b0c0c")
+const PANEL_COLOR := Color("#171a17")
+const PANEL_ALT := Color("#111312")
+const LINE_COLOR := Color("#3d413b")
+const TEXT_COLOR := Color("#eee9dd")
+const MUTED_COLOR := Color("#979c94")
+const FLOOR_DARK := Color("#63685f")
+const GOLD_COLOR := Color("#e6cc64")
+
+var game: Node
+var font: Font
+
+var TREASURES: Array:
+	get: return game.TREASURES
+var TOOL_DEFS: Dictionary:
+	get: return game.TOOL_DEFS
+var SHOP_TOOL_TYPES: Array:
+	get: return game.SHOP_TOOL_TYPES
+var rooms: Array:
+	get: return game.rooms
+var monster: Dictionary:
+	get: return game.monster
+var thief: Dictionary:
+	get: return game.thief
+var selected_treasure: int:
+	get: return game.selected_treasure
+var phase: String:
+	get: return game.phase
+var seconds_left: int:
+	get: return game.seconds_left
+var elapsed: float:
+	get: return game.elapsed
+var noises: Array:
+	get: return game.noises
+var outcome: String:
+	get: return game.outcome
+var early_rect: Rect2:
+	get: return game.early_rect
+	set(value): game.early_rect = value
+var result_restart_rect: Rect2:
+	get: return game.result_restart_rect
+	set(value): game.result_restart_rect = value
+var help_open: Dictionary:
+	get: return game.help_open
+var help_rects: Dictionary:
+	get: return game.help_rects
+var tool_inventories: Dictionary:
+	get: return game.tool_inventories
+var tool_selected: Dictionary:
+	get: return game.tool_selected
+var status_effects: Dictionary:
+	get: return game.status_effects
+var trapped_by: Dictionary:
+	get: return game.trapped_by
+var trap_escape_progress: Dictionary:
+	get: return game.trap_escape_progress
+var current_round: int:
+	get: return maxi(int(game.current_round), 1)
+var player_coins: Dictionary:
+	get: return game.player_coins
+var player_stashes: Dictionary:
+	get: return game.player_stashes
+var player_loadouts: Dictionary:
+	get: return game.player_loadouts
+var shop_selected: Dictionary:
+	get: return game.shop_selected
+var shop_ready: Dictionary:
+	get: return game.shop_ready
+var match_totals: Dictionary:
+	get: return game.match_totals
+var gm_console_open: bool:
+	get: return bool(game.gm_console_open)
+var gm_command: String:
+	get: return str(game.gm_command)
+var gm_output: String:
+	get: return str(game.gm_output)
+var gm_history: Array[String]:
+	get:
+		var result: Array[String] = []
+		result.assign(game.gm_history)
+		return result
+var world_25d: World25D:
+	get: return game.world_25d
+
+
+func setup(host: Node) -> void:
+	game = host
+	font = ThemeDB.fallback_font
+	set_process(true)
+	queue_redraw()
+
+
+func _process(_delta: float) -> void:
+	if game:
+		queue_redraw()
+
+
+func _get_actor(role: String) -> Dictionary:
+	return game._get_actor(role)
+
+
+func _room_at(room_pos: Vector2i) -> Dictionary:
+	return game._room_at(room_pos)
+
+
+func _player_for_role(role: String) -> String:
+	return game._player_for_role(role)
+
+
+func _active_storage_furniture() -> Dictionary:
+	return game._active_storage_furniture()
+
+
+func _nearby_tool_for_panel(role: String) -> Dictionary:
+	return game._nearby_tool_for_panel(role)
+
+
+func _role_can_pick_up_item(role: String, item: Dictionary) -> bool:
+	return game._role_can_pick_up_item(role, item)
+
+
+func _selected_shop_tool_type(player: String) -> String:
+	return game._selected_shop_tool_type(player)
+
+
+func _direction_vector(direction: String) -> Vector2:
+	return game._direction_vector(direction)
+
+
+func _draw() -> void:
+	if not game:
+		return
+	var size := get_viewport_rect().size
+	draw_rect(Rect2(Vector2.ZERO, size), BG_COLOR)
+	var layout := _calculate_layout(size)
+	_draw_room_panel(layout["monster_panel"], layout["monster_room"], "monster")
+	_draw_room_panel(layout["thief_panel"], layout["thief_room"], "thief")
+	if phase == "ready":
+		_draw_countdown_overlay(size)
+	elif phase == "shop":
+		_draw_shop_overlay(size)
+	elif phase == "ended":
+		_draw_result_overlay(size)
+	if bool(gm_console_open):
+		_draw_gm_console(size)
+
+
+func _calculate_layout(size: Vector2) -> Dictionary:
+	var margin := 10.0
+	var gap := 10.0
+	var side_width := (size.x - margin * 2.0 - gap) / 2.0
+	var panel_height := size.y - margin * 2.0
+	var room_side := minf(side_width - 18.0, panel_height - 105.0)
+	room_side = maxf(room_side, 280.0)
+	var left_panel := Rect2(margin, margin, side_width, panel_height)
+	var right_panel := Rect2(left_panel.end.x + gap, margin, side_width, panel_height)
+	var left_room := Rect2(
+		left_panel.position.x + (side_width - room_side) / 2.0,
+		left_panel.position.y + 48.0,
+		room_side,
+		room_side
+	)
+	var right_room := Rect2(
+		right_panel.position.x + (side_width - room_side) / 2.0,
+		right_panel.position.y + 48.0,
+		room_side,
+		room_side
+	)
+	return {
+		"monster_panel": left_panel,
+		"monster_room": left_room,
+		"thief_panel": right_panel,
+		"thief_room": right_room,
+	}
+
+
+func _draw_button(rect: Rect2, label: String, secondary := false) -> void:
+	var fill := Color("#262a26") if secondary else Color("#d9d3c5")
+	var color := TEXT_COLOR if secondary else Color("#171917")
+	draw_rect(rect, fill)
+	draw_rect(rect, Color("#777d73"), false, 1)
+	_text_center(label, rect, 12, color)
+
+
+func _draw_gm_console(size: Vector2) -> void:
+	var width := minf(size.x - 40.0, 1040.0)
+	var card := Rect2(
+		Vector2((size.x - width) * 0.5, size.y - 178.0),
+		Vector2(width, 158.0),
+	)
+	draw_rect(card, Color(0.015, 0.018, 0.015, 0.98))
+	draw_rect(card, Color("#86e36f"), false, 2.0)
+	draw_rect(Rect2(card.position, Vector2(card.size.x, 31.0)), Color("#172018"))
+	_text("GM CONSOLE", card.position + Vector2(12, 21), 12, Color("#86e36f"))
+	_text_right("~ / Esc 关闭", card.position + Vector2(card.size.x - 12, 21), 10, MUTED_COLOR)
+	_text(str(gm_output), card.position + Vector2(14, 55), 11, TEXT_COLOR)
+	var history_y := card.position.y + 78.0
+	for index in range(mini(gm_history.size(), 2) - 1, -1, -1):
+		_text(str(gm_history[index]), Vector2(card.position.x + 14, history_y), 9, MUTED_COLOR)
+		history_y += 17.0
+	var input_rect := Rect2(
+		Vector2(card.position.x + 12, card.end.y - 38),
+		Vector2(card.size.x - 24, 27),
+	)
+	draw_rect(input_rect, Color("#090b09"))
+	draw_rect(input_rect, Color("#456d43"), false, 1.0)
+	_text("> " + str(gm_command) + "▌", input_rect.position + Vector2(8, 19), 12, Color("#b8f0ae"))
+
+
+func _draw_room_panel(panel: Rect2, room_rect: Rect2, role: String) -> void:
+	var accent := MONSTER_COLOR if role == "monster" else THIEF_COLOR
+	var actor := _get_actor(role)
+	var room := _room_at(actor["room"])
+	draw_rect(panel, PANEL_COLOR)
+	draw_rect(panel, LINE_COLOR, false, 1)
+	draw_line(panel.position, Vector2(panel.end.x, panel.position.y), accent, 3)
+	_text(
+		"玩家%s · %s视角" % [_player_for_role(role), "怪物" if role == "monster" else "盗贼"],
+		panel.position + Vector2(12, 20),
+		10,
+		MUTED_COLOR,
+	)
+	_text("房间 %d-%d · %s" % [actor["room"].x + 1, actor["room"].y + 1, _phase_short_label()], panel.position + Vector2(12, 39), 14, TEXT_COLOR)
+	var help_rect := Rect2(Vector2(panel.end.x - 40, panel.position.y + 9), Vector2(28, 28))
+	help_rects[role] = help_rect
+	draw_rect(help_rect, Color("#252925"))
+	draw_rect(help_rect, accent, false, 1.5)
+	_text_center("?", help_rect, 16, accent)
+	if role == "monster" and phase == "hide":
+		early_rect = Rect2(Vector2(help_rect.position.x - 126, panel.position.y + 9), Vector2(116, 28))
+		_draw_button(early_rect, "提前结束藏宝", true)
+	elif role == "monster":
+		early_rect = Rect2()
+
+	_draw_room(room_rect, role, room, actor)
+	if role == "monster":
+		_draw_storage_exchange(room_rect)
+	_draw_view_minimap(room_rect, role)
+	_draw_role_status(room_rect, role)
+	_draw_nearby_tool_panel(room_rect, role)
+	if bool(help_open[role]):
+		_draw_help_overlay(room_rect, role)
+	var footer := Rect2(panel.position.x, room_rect.end.y + 10, panel.size.x, panel.end.y - room_rect.end.y - 10)
+	draw_rect(footer, PANEL_ALT)
+	draw_line(footer.position, Vector2(footer.end.x, footer.position.y), LINE_COLOR, 1)
+	_draw_toolbelt(footer, role)
+
+
+func _draw_toolbelt(footer: Rect2, role: String) -> void:
+	var inventory: Array = tool_inventories[role]
+	var accent := MONSTER_COLOR if role == "monster" else THIEF_COLOR
+	var start := footer.position + Vector2(12, 5)
+	var gap := 6.0
+	var slot_width := (footer.size.x - 24.0 - gap * 2.0) / 3.0
+	for index in range(TOOL_INVENTORY_CAPACITY):
+		var slot := Rect2(start + Vector2(index * (slot_width + gap), 0), Vector2(slot_width, 36))
+		draw_rect(slot, Color("#20231f"))
+		draw_rect(slot, accent if index == int(tool_selected[role]) and index < inventory.size() else LINE_COLOR, false, 1.5)
+		if index >= inventory.size():
+			_text_center("%d · 空" % [index + 1], slot, 9, MUTED_COLOR)
+			continue
+		var tool: Dictionary = inventory[index]
+		var label := str(TOOL_DEFS[str(tool["tool_type"])]["short"])
+		var status := ""
+		if str(tool["tool_type"]) == "detector":
+			status = " ON" if bool(tool.get("active", false)) else " %.0fs" % float(tool.get("charge", 0.0))
+		_text_center("%d · %s%s" % [index + 1, label, status], slot, 9, TEXT_COLOR)
+
+
+func _draw_role_status(room_rect: Rect2, role: String) -> void:
+	var message := ""
+	var color := GOLD_COLOR
+	if str(trapped_by.get(role, "")) != "":
+		var key_hint := "A/D" if role == "monster" else "←/→"
+		message = "被捕！%s交替按压 %d / %d" % [key_hint, trap_escape_progress[role], TRAP_ESCAPE_PRESSES]
+		color = MONSTER_COLOR
+	else:
+		var effects: Dictionary = status_effects[role]
+		if elapsed < float(effects.get("stunned_until", 0.0)):
+			message = "眩晕 %.1f秒" % (float(effects["stunned_until"]) - elapsed)
+		elif elapsed < float(effects.get("adrenaline_until", 0.0)):
+			message = "肾上腺素 2× · %.1f秒" % (float(effects["adrenaline_until"]) - elapsed)
+		elif elapsed < float(effects.get("fatigue_until", 0.0)):
+			message = "疲劳 0.5× · %.1f秒" % (float(effects["fatigue_until"]) - elapsed)
+		elif float(effects.get("teleport_ends", -1.0)) > elapsed:
+			message = "传送器轰鸣 · %.1f秒" % (float(effects["teleport_ends"]) - elapsed)
+			color = Color("#68c8ff")
+	if message == "":
+		return
+	var status_rect := Rect2(
+		Vector2(room_rect.get_center().x - 150, room_rect.position.y + 14),
+		Vector2(300, 32),
+	)
+	draw_rect(status_rect, Color(0.04, 0.045, 0.04, 0.92))
+	draw_rect(status_rect, color, false, 2.0)
+	_text_center(message, status_rect, 12, color)
+
+
+func _draw_nearby_tool_panel(room_rect: Rect2, role: String) -> void:
+	if bool(help_open[role]) or (role == "monster" and not _active_storage_furniture().is_empty()):
+		return
+	var nearby := _nearby_tool_for_panel(role)
+	if nearby.is_empty():
+		return
+	var item: Dictionary = nearby["item"]
+	var tool_type := str(item.get("tool_type", item.get("device_type", "")))
+	var definition: Dictionary = TOOL_DEFS[tool_type]
+	var accent: Color = definition["color"]
+	var panel_width := minf(room_rect.size.x - 32.0, 520.0)
+	var panel := Rect2(
+		Vector2(room_rect.get_center().x - panel_width / 2.0, room_rect.end.y - 88.0),
+		Vector2(panel_width, 70.0),
+	)
+	draw_rect(panel, Color(0.035, 0.04, 0.035, 0.96))
+	draw_rect(panel, Color(accent, 0.9), false, 1.5)
+	draw_rect(Rect2(panel.position, Vector2(5.0, panel.size.y)), accent)
+
+	var title := str(definition["label"])
+	var state := str(item.get("state", ""))
+	if tool_type == "trap" and state == "recoverable":
+		title += " · 可拾取"
+	elif tool_type == "phonograph" and state == "idle":
+		title += " · 待启动"
+	elif tool_type == "phonograph" and state == "playing":
+		title += " · 播放中"
+	_text(title, panel.position + Vector2(17, 25), 14, TEXT_COLOR)
+	_text(str(definition["description"]), panel.position + Vector2(17, 51), 10, MUTED_COLOR)
+
+	var hint := "已布置"
+	var distance := float(nearby["distance"])
+	if _role_can_pick_up_item(role, item):
+		if distance > PICKUP_DISTANCE:
+			hint = "继续靠近"
+		elif str(item.get("kind", "")) in ["tool", "device"] and tool_inventories[role].size() >= TOOL_INVENTORY_CAPACITY:
+			hint = "道具栏已满"
+		else:
+			hint = "R 拾取" if role == "monster" else "Num1 拾取"
+	elif tool_type == "teleporter" and role == "monster":
+		hint = "仅盗贼可用"
+	elif tool_type == "phonograph" and state == "idle" and str(item.get("owner", "")) == role:
+		hint = "F 启动" if role == "monster" else "Num3 启动"
+	_text_right(hint, panel.position + Vector2(panel.size.x - 15, 25), 10, accent)
+
+
+func _phase_short_label() -> String:
+	match phase:
+		"hide": return "藏宝 %d:%02d" % [seconds_left / 60, seconds_left % 60]
+		"ready": return "准备 %d" % seconds_left
+		"hunt": return "搜查 %d:%02d" % [seconds_left / 60, seconds_left % 60]
+		"shop": return "局间商店"
+		_: return "本局结束"
+
+
+func _draw_view_minimap(room_rect: Rect2, role: String) -> void:
+	var expanded := _map_expanded(role)
+	var map_size := clampf(room_rect.size.x * 0.2, 92.0, 124.0)
+	var map_rect := Rect2(room_rect.position + Vector2(14, 14), Vector2(map_size, map_size))
+	if expanded:
+		map_size = minf(room_rect.size.x, room_rect.size.y) * 0.72
+		map_rect = Rect2(room_rect.get_center() - Vector2.ONE * map_size / 2.0, Vector2.ONE * map_size)
+	draw_rect(map_rect.grow(7), Color(0.035, 0.04, 0.035, 0.94))
+	draw_rect(map_rect.grow(7), MONSTER_COLOR if role == "monster" else THIEF_COLOR, false, 1.5)
+	_draw_minimap(map_rect, role)
+	if not expanded:
+		_text("TAB" if role == "monster" else "N8", map_rect.position + Vector2(4, 12), 8, Color(1, 1, 1, 0.7))
+
+
+func _map_expanded(role: String) -> bool:
+	return Input.is_key_pressed(KEY_TAB) if role == "monster" else Input.is_key_pressed(KEY_KP_8)
+
+
+func _draw_help_overlay(room_rect: Rect2, role: String) -> void:
+	var accent := MONSTER_COLOR if role == "monster" else THIEF_COLOR
+	var card := room_rect.grow(-42)
+	draw_rect(card, Color(0.035, 0.04, 0.035, 0.97))
+	draw_rect(card, accent, false, 2.0)
+	_text_center("本局规则", Rect2(card.position + Vector2(0, 20), Vector2(card.size.x, 28)), 20, TEXT_COLOR)
+	var rules := (
+		"· 怪物一击打开家具；盗贼所需撞击数 = 家具耐久 + 内部财物价值。\n"
+		+ "· 场上只生成地面药丸与家具内肾上腺素；其他道具只能在局间商店购买。\n"
+		+ "· 每场共4局，A/B轮流担任怪物；搜查限时8分钟。\n"
+		+ "· 财物只有从入口撤离后才结算；1点价值折算5金币。\n"
+		+ "· 真实藏品不会自行晃动；探测器开启后才按价值显示信号。\n"
+		+ "· 每人最多装备3件道具；未使用道具会退回个人仓库并跨局继承。\n"
+		+ "· 警报器只能靠近完好家具安装；全图噪音会暴露方向。\n"
+		+ "· 捕兽夹需左右键严格交替20次挣脱；传送器轰鸣5秒后撤离。"
+	)
+	_multiline(rules, card.position + Vector2(34, 78), card.size.x - 68, 11, MUTED_COLOR, 22)
+	var controls := ""
+	if role == "monster":
+		controls = (
+			"WASD 移动　G 撞击　空格 攻击　R 拾取\n"
+			+ "Z/X 选择道具　F 使用　Q/E 转动视角　Tab 地图\n"
+			+ "H 结束藏宝　家具面板：W/S 选择　R 存取　Esc 关闭"
+		)
+	else:
+		controls = (
+			"方向键 移动　Num0 撞击　Num1 拾取　Num2 药丸\n"
+			+ "Num4/6 选择道具　Num3 使用　Num5 撤离\n"
+			+ "Num7/9 转动视角　按住 Num8 地图　Num+ 帮助"
+		)
+	var controls_title_y := minf(card.position.y + 286.0, card.end.y - 132.0)
+	_text("完整键位", Vector2(card.position.x + 34, controls_title_y), 13, accent)
+	_multiline(
+		controls,
+		Vector2(card.position.x + 34, controls_title_y + 28),
+		card.size.x - 68,
+		11,
+		TEXT_COLOR,
+		20,
+	)
+	var close_label := "F1 / Esc 关闭" if role == "monster" else "Num+ / Esc 关闭"
+	_text_center(close_label, Rect2(Vector2(card.position.x, card.end.y - 48), Vector2(card.size.x, 25)), 11, accent)
+
+
+func _draw_storage_exchange(room_rect: Rect2) -> void:
+	var furniture := _active_storage_furniture()
+	if furniture.is_empty():
+		return
+	var overlay_height := minf(210.0, room_rect.size.y * 0.48)
+	var overlay := Rect2(
+		room_rect.position + Vector2(14.0, room_rect.size.y - overlay_height - 14.0),
+		Vector2(room_rect.size.x - 28.0, overlay_height)
+	)
+	draw_rect(overlay, Color(0.055, 0.062, 0.055, 0.96))
+	draw_rect(overlay, GOLD_COLOR, false, 2.0)
+	var title_rect := Rect2(overlay.position, Vector2(overlay.size.x, 34.0))
+	draw_rect(title_rect, Color("#25271f"))
+	_text("家具已打开 · W/S 选择 · R 存取 · Esc 关闭", title_rect.position + Vector2(12, 22), 11, GOLD_COLOR)
+
+	var gap := 10.0
+	var column_width := (overlay.size.x - 34.0 - gap) / 2.0
+	var left := Rect2(overlay.position + Vector2(12, 44), Vector2(column_width, overlay.size.y - 56))
+	var right := Rect2(Vector2(left.end.x + gap, left.position.y), left.size)
+	draw_rect(left, Color("#151815"))
+	draw_rect(right, Color("#151815"))
+	draw_rect(left, LINE_COLOR, false, 1.0)
+	draw_rect(right, LINE_COLOR, false, 1.0)
+	_text("怪物藏品", left.position + Vector2(10, 20), 11, TEXT_COLOR)
+	_text("家具面板 · %s" % furniture["kind"], right.position + Vector2(10, 20), 11, TEXT_COLOR)
+
+	var row_y := left.position.y + 34.0
+	for index in range(TREASURES.size()):
+		var treasure: Dictionary = TREASURES[index]
+		var row := Rect2(Vector2(left.position.x + 7, row_y - 14), Vector2(left.size.x - 14, 25))
+		if index == selected_treasure:
+			draw_rect(row, Color(0.9, 0.75, 0.24, 0.16))
+			draw_rect(row, GOLD_COLOR, false, 1.0)
+		var status := _treasure_panel_status(str(treasure["id"]), str(furniture["id"]))
+		_text("%s%s · %d" % ["▶ " if index == selected_treasure else "   ", treasure["label"], treasure["value"]], Vector2(row.position.x + 4, row_y + 3), 10, TEXT_COLOR)
+		_text_right(status, Vector2(row.end.x - 4, row_y + 3), 9, GOLD_COLOR if status == "随身" else MUTED_COLOR)
+		row_y += 29.0
+
+	var stored_treasure := "空藏品槽"
+	var trinket_names: Array[String] = []
+	for content in furniture["contents"]:
+		if content["kind"] == "treasure":
+			stored_treasure = "%s · 价值 %d" % [content["label"], content["value"]]
+		elif content["kind"] == "alarm":
+			stored_treasure = "警报器 · 假藏品信号"
+		elif content["kind"] == "tool":
+			trinket_names.append("道具：%s" % content["label"])
+		elif content["kind"] == "trinket":
+			trinket_names.append("%s · %d" % [content["label"], content["value"]])
+	_text("藏品槽（限 1 件）", right.position + Vector2(10, 43), 9, MUTED_COLOR)
+	_multiline(stored_treasure, right.position + Vector2(10, 62), right.size.x - 20, 10, GOLD_COLOR if stored_treasure != "空藏品槽" else TEXT_COLOR, 16)
+	_text("其他物品", right.position + Vector2(10, 91), 9, MUTED_COLOR)
+	var trinket_text := "无" if trinket_names.is_empty() else "、".join(trinket_names)
+	_multiline(trinket_text, right.position + Vector2(10, 110), right.size.x - 20, 9, TEXT_COLOR, 15)
+
+
+func _treasure_panel_status(treasure_id: String, current_furniture_id: String) -> String:
+	for room in rooms:
+		for furniture in room["furniture"]:
+			for content in furniture["contents"]:
+				if str(content["id"]) == treasure_id:
+					return "本家具" if str(furniture["id"]) == current_furniture_id else "已存放"
+		for item in room["items"]:
+			if str(item["id"]) == treasure_id and not bool(item["collected"]):
+				return "已掉落"
+	return "随身"
+
+
+func _door_label(doors: Array) -> String:
+	var result: Array[String] = []
+	for door in doors:
+		match door:
+			"up": result.append("上")
+			"right": result.append("右")
+			"down": result.append("下")
+			"left": result.append("左")
+	return " · ".join(result)
+
+
+func _draw_room(rect: Rect2, role: String, room: Dictionary, actor: Dictionary) -> void:
+	draw_rect(rect.grow(7), Color("#252620"))
+	if world_25d:
+		var view_texture: Texture2D = world_25d.texture_for(role)
+		if view_texture:
+			draw_texture_rect(view_texture, rect, false)
+		else:
+			draw_rect(rect, FLOOR_DARK)
+	else:
+		draw_rect(rect, FLOOR_DARK)
+	draw_rect(rect, Color("#777b70"), false, 2)
+	var vignette := Color(0.01, 0.012, 0.01, 0.18)
+	draw_rect(Rect2(rect.position, Vector2(rect.size.x, 12)), vignette)
+	draw_rect(Rect2(Vector2(rect.position.x, rect.end.y - 12), Vector2(rect.size.x, 12)), vignette)
+	_draw_noise_directions(rect, role, actor)
+
+
+func _room_point(rect: Rect2, pos: Vector2) -> Vector2:
+	return rect.position + Vector2((pos.x + 0.5) / ROOM_SIZE, (pos.y + 0.5) / ROOM_SIZE) * rect.size
+
+
+func _item_is_hidden(room: Dictionary, item: Dictionary) -> bool:
+	for furniture in room["furniture"]:
+		if (furniture["pos"] as Vector2).distance_to(item["pos"]) < 0.44:
+			return true
+	return false
+
+
+func _draw_furniture(rect: Rect2, furniture: Dictionary, selected: bool, mode: String) -> void:
+	var center := _room_point(rect, furniture["pos"])
+	var unit := rect.size.x / ROOM_SIZE
+	var angle := deg_to_rad(float(furniture["rotation"]))
+	var local_points := [
+		Vector2(-unit * 0.38, -unit * 0.26), Vector2(unit * 0.38, -unit * 0.26),
+		Vector2(unit * 0.38, unit * 0.26), Vector2(-unit * 0.38, unit * 0.26),
+	]
+	var points := PackedVector2Array()
+	for point in local_points:
+		points.append(center + (point as Vector2).rotated(angle))
+	draw_colored_polygon(points, Color("#65675f"))
+	for index in range(4):
+		draw_line(points[index], points[(index + 1) % 4], GOLD_COLOR if selected else Color("#b6b0a4"), 2)
+	if selected:
+		draw_circle(center, 4, GOLD_COLOR if mode == "rotate" else TEXT_COLOR)
+	var label_rect := Rect2(center - Vector2(unit * 0.38, 10), Vector2(unit * 0.76, 20))
+	_text_center(furniture["kind"], label_rect, int(clamp(unit * 0.13, 9, 12)), TEXT_COLOR)
+
+
+func _draw_doors(rect: Rect2, doors: Array) -> void:
+	var length := rect.size.x * 0.13
+	var thickness := 15.0
+	for door in doors:
+		var door_rect := Rect2()
+		match door:
+			"up":
+				door_rect = Rect2(rect.position.x + rect.size.x / 2.0 - length / 2.0, rect.position.y - thickness / 2.0, length, thickness)
+			"down":
+				door_rect = Rect2(rect.position.x + rect.size.x / 2.0 - length / 2.0, rect.end.y - thickness / 2.0, length, thickness)
+			"left":
+				door_rect = Rect2(rect.position.x - thickness / 2.0, rect.position.y + rect.size.y / 2.0 - length / 2.0, thickness, length)
+			"right":
+				door_rect = Rect2(rect.end.x - thickness / 2.0, rect.position.y + rect.size.y / 2.0 - length / 2.0, thickness, length)
+		draw_rect(door_rect, Color("#111311"))
+		draw_rect(door_rect, Color("#858a80"), false, 1)
+
+
+func _draw_actor(rect: Rect2, actor: Dictionary, role: String) -> void:
+	var center := _room_point(rect, actor["pos"])
+	var radius := rect.size.x / ROOM_SIZE * 0.22
+	var color := MONSTER_COLOR if role == "monster" else THIEF_COLOR
+	draw_circle(center, radius + 3, Color(1, 1, 1, 0.14))
+	draw_circle(center, radius, color)
+	_text_center("怪" if role == "monster" else "盗", Rect2(center - Vector2(radius, radius), Vector2(radius * 2, radius * 2)), int(clamp(radius * 0.9, 10, 15)), Color("#101110"))
+	var facing := _direction_vector(actor["dir"])
+	draw_line(center + facing * radius * 0.7, center + facing * radius * 1.45, color, 3)
+
+
+func _draw_afterimage(rect: Rect2, pos: Vector2, alpha: float) -> void:
+	var center := _room_point(rect, pos)
+	var radius := rect.size.x / ROOM_SIZE * 0.21
+	draw_circle(center, radius, Color(1.0, 0.12, 0.12, 0.25 * alpha))
+	draw_arc(center, radius, 0, TAU, 28, Color(1.0, 0.3, 0.25, alpha), 2)
+	_text_center("人", Rect2(center - Vector2(radius, radius), Vector2(radius * 2, radius * 2)), 11, Color(1.0, 0.65, 0.6, alpha))
+
+
+func _draw_attack_cone(rect: Rect2, actor: Dictionary) -> void:
+	var center := _room_point(rect, actor["pos"])
+	var unit := rect.size.x / ROOM_SIZE
+	var facing := _direction_vector(actor["dir"])
+	var left := facing.rotated(-PI / 4.0) * unit * 2.35
+	var right := facing.rotated(PI / 4.0) * unit * 2.35
+	var points := PackedVector2Array([center, center + left, center + right])
+	draw_colored_polygon(points, Color(1.0, 0.25, 0.12, 0.24))
+	draw_line(center, center + left, MONSTER_COLOR, 1.5)
+	draw_line(center, center + right, MONSTER_COLOR, 1.5)
+
+
+func _draw_noise_directions(rect: Rect2, role: String, actor: Dictionary) -> void:
+	var actor_global := Vector2(actor["room"]) * ROOM_SIZE + (actor["pos"] as Vector2)
+	var origin := _room_point(rect, actor["pos"])
+	if world_25d:
+		var normalized: Vector2 = world_25d.project_normalized(role, actor["room"], actor["pos"], 0.55)
+		origin = rect.position + normalized * rect.size
+	for noise in noises:
+		if noise["source"] == role:
+			continue
+		var room_distance: int = abs(noise["room"].x - actor["room"].x) + abs(noise["room"].y - actor["room"].y)
+		if room_distance >= 3 and not bool(noise.get("global", false)):
+			continue
+		var source_global: Vector2 = Vector2(noise["room"]) * ROOM_SIZE + (noise["pos"] as Vector2)
+		var angle: float = actor_global.angle_to_point(source_global)
+		if world_25d:
+			var source_normalized: Vector2 = world_25d.project_normalized(
+				role,
+				noise["room"],
+				noise["pos"],
+				0.55,
+			)
+			var source_screen := rect.position + source_normalized * rect.size
+			angle = origin.angle_to_point(source_screen)
+		var color: Color = (
+			MONSTER_COLOR if noise["source"] == "monster"
+			else THIEF_COLOR if noise["source"] == "thief"
+			else GOLD_COLOR
+		)
+		var duration := maxf(float(noise.get("duration", 2.0)), 0.01)
+		var fade: float = clampf((float(noise["expires"]) - elapsed) / duration, 0.0, 1.0)
+		for radius in [25.0, 42.0, 59.0]:
+			draw_arc(origin, radius, angle - 0.58, angle + 0.58, 12, Color(color, fade), 2)
+
+
+func _minimap_rotation(role: String) -> float:
+	if not world_25d:
+		return 0.0
+	return deg_to_rad(float(world_25d.camera_yaw_degrees[role]))
+
+
+func _rotate_minimap_point(point: Vector2, center: Vector2, angle: float) -> Vector2:
+	return center + (point - center).rotated(angle)
+
+
+func _draw_minimap(rect: Rect2, role: String) -> void:
+	var angle := _minimap_rotation(role)
+	var center := rect.get_center()
+	var rotated_bounds_scale := absf(cos(angle)) + absf(sin(angle))
+	var grid_side := minf(rect.size.x, rect.size.y) / maxf(rotated_bounds_scale, 1.0)
+	var grid_rect := Rect2(center - Vector2.ONE * grid_side / 2.0, Vector2.ONE * grid_side)
+	var gap := 3.0
+	var cell := (grid_side - gap * (MAP_SIZE - 1)) / MAP_SIZE
+	var actor: Dictionary = _get_actor(role)
+	var accent := MONSTER_COLOR if role == "monster" else THIEF_COLOR
+	for room in rooms:
+		var coord: Vector2i = room["coord"]
+		var cell_rect := Rect2(
+			grid_rect.position + Vector2(coord.x, coord.y) * (cell + gap),
+			Vector2(cell, cell)
+		)
+		var has_actor: bool = actor["room"] == coord
+		var fill := accent.darkened(0.2) if has_actor else Color("#252824")
+		var corners := PackedVector2Array([
+			_rotate_minimap_point(cell_rect.position, center, angle),
+			_rotate_minimap_point(Vector2(cell_rect.end.x, cell_rect.position.y), center, angle),
+			_rotate_minimap_point(cell_rect.end, center, angle),
+			_rotate_minimap_point(Vector2(cell_rect.position.x, cell_rect.end.y), center, angle),
+		])
+		draw_colored_polygon(corners, fill)
+		for corner_index in range(corners.size()):
+			draw_line(corners[corner_index], corners[(corner_index + 1) % corners.size()], Color("#4b5048"), 1)
+		var door_length := cell * 0.32
+		for door in room["doors"]:
+			var door_from := Vector2.ZERO
+			var door_to := Vector2.ZERO
+			match door:
+				"up":
+					door_from = Vector2(cell_rect.get_center().x - door_length / 2, cell_rect.position.y)
+					door_to = Vector2(cell_rect.get_center().x + door_length / 2, cell_rect.position.y)
+				"down":
+					door_from = Vector2(cell_rect.get_center().x - door_length / 2, cell_rect.end.y)
+					door_to = Vector2(cell_rect.get_center().x + door_length / 2, cell_rect.end.y)
+				"left":
+					door_from = Vector2(cell_rect.position.x, cell_rect.get_center().y - door_length / 2)
+					door_to = Vector2(cell_rect.position.x, cell_rect.get_center().y + door_length / 2)
+				"right":
+					door_from = Vector2(cell_rect.end.x, cell_rect.get_center().y - door_length / 2)
+					door_to = Vector2(cell_rect.end.x, cell_rect.get_center().y + door_length / 2)
+			draw_line(
+				_rotate_minimap_point(door_from, center, angle),
+				_rotate_minimap_point(door_to, center, angle),
+				TEXT_COLOR,
+				2,
+			)
+		if has_actor:
+			var marker_center := _rotate_minimap_point(cell_rect.get_center(), center, angle)
+			draw_circle(marker_center, maxf(cell * 0.18, 3.5), accent)
+			draw_circle(marker_center, maxf(cell * 0.18, 3.5), Color("#111311"), false, 1.0)
+	var opponent_role := "thief" if role == "monster" else "monster"
+	var opponent := _get_actor(opponent_role)
+	var opponent_coord: Vector2i = opponent["room"]
+	var opponent_center := grid_rect.position + Vector2(opponent_coord.x, opponent_coord.y) * (cell + gap) + Vector2.ONE * cell * 0.5
+	opponent_center = _rotate_minimap_point(opponent_center, center, angle)
+	var opponent_color := THIEF_COLOR if opponent_role == "thief" else MONSTER_COLOR
+	draw_circle(opponent_center + Vector2(2, -2), maxf(cell * 0.14, 3.0), opponent_color)
+	draw_circle(opponent_center + Vector2(2, -2), maxf(cell * 0.14, 3.0), Color("#111311"), false, 1.0)
+	for room in rooms:
+		for item in room["items"]:
+			if (
+				bool(item.get("collected", false))
+				or str(item.get("device_type", "")) != "decoy"
+				or str(item.get("owner", "")) == role
+			):
+				continue
+			var decoy_coord: Vector2i = room["coord"]
+			var decoy_center := grid_rect.position + Vector2(decoy_coord.x, decoy_coord.y) * (cell + gap) + Vector2.ONE * cell * 0.5
+			decoy_center = _rotate_minimap_point(decoy_center, center, angle)
+			var decoy_color := THIEF_COLOR if str(item.get("owner", "")) == "thief" else MONSTER_COLOR
+			draw_circle(decoy_center + Vector2(2, -2), maxf(cell * 0.14, 3.0), decoy_color)
+			draw_circle(decoy_center + Vector2(2, -2), maxf(cell * 0.14, 3.0), Color("#111311"), false, 1.0)
+
+
+func _draw_countdown_overlay(size: Vector2) -> void:
+	draw_rect(Rect2(Vector2.ZERO, size), Color(0.02, 0.025, 0.02, 0.72))
+	var card := Rect2(size / 2.0 - Vector2(220, 135), Vector2(440, 270))
+	draw_rect(card, PANEL_COLOR)
+	draw_rect(card, Color("#8b8f86"), false, 1)
+	_text_center("双方玩家准备", Rect2(card.position + Vector2(0, 30), Vector2(card.size.x, 22)), 11, MUTED_COLOR)
+	_text_center(str(seconds_left), Rect2(card.position + Vector2(0, 62), Vector2(card.size.x, 100)), 76, TEXT_COLOR)
+	_text_center("怪物与盗贼已回到起点，倒计时结束后正式开始。", Rect2(card.position + Vector2(0, 190), Vector2(card.size.x, 30)), 12, MUTED_COLOR)
+
+
+func _stash_tool_count(player: String, tool_type: String) -> int:
+	var count := 0
+	for tool in player_stashes[player]:
+		if str(tool.get("tool_type", "")) == tool_type:
+			count += 1
+	return count
+
+
+func _equipped_tool_count(player: String, tool_type: String) -> int:
+	var equipped_ids: Array = player_loadouts[player]
+	var count := 0
+	for tool in player_stashes[player]:
+		if str(tool.get("tool_type", "")) == tool_type and equipped_ids.has(str(tool.get("id", ""))):
+			count += 1
+	return count
+
+
+func _draw_shop_player_panel(rect: Rect2, player: String) -> void:
+	var accent := MONSTER_COLOR if player == "A" else THIEF_COLOR
+	draw_rect(rect, PANEL_COLOR)
+	draw_rect(rect, accent, false, 2.0)
+	var next_round := current_round + 1
+	var next_role := "怪物" if (
+		(player == "A" and next_round % 2 == 1)
+		or (player == "B" and next_round % 2 == 0)
+	) else "盗贼"
+	_text(
+		"玩家%s · %d金币 · 下一局：%s" % [player, player_coins[player], next_role],
+		rect.position + Vector2(18, 30),
+		18,
+		TEXT_COLOR,
+	)
+	_text(
+		"仓库 %d件 · 已装备 %d/3" % [
+			(player_stashes[player] as Array).size(),
+			(player_loadouts[player] as Array).size(),
+		],
+		rect.position + Vector2(18, 54),
+		10,
+		MUTED_COLOR,
+	)
+	var row_height := 43.0
+	var list_top := rect.position.y + 70.0
+	for index in range(SHOP_TOOL_TYPES.size()):
+		var tool_type := str(SHOP_TOOL_TYPES[index])
+		var definition: Dictionary = TOOL_DEFS[tool_type]
+		var row := Rect2(
+			Vector2(rect.position.x + 14, list_top + index * row_height),
+			Vector2(rect.size.x - 28, row_height - 4),
+		)
+		if index == int(shop_selected[player]):
+			draw_rect(row, Color(accent, 0.15))
+			draw_rect(row, accent, false, 1.5)
+		else:
+			draw_rect(row, PANEL_ALT)
+		var marker := "▶ " if index == int(shop_selected[player]) else "   "
+		_text(
+			"%s%s · %d金币" % [marker, definition["label"], definition["price"]],
+			row.position + Vector2(8, 17),
+			11,
+			TEXT_COLOR,
+		)
+		_text(
+			"仓库%d / 装备%d" % [
+				_stash_tool_count(player, tool_type),
+				_equipped_tool_count(player, tool_type),
+			],
+			row.position + Vector2(8, 33),
+			9,
+			MUTED_COLOR,
+		)
+	var selected_type := _selected_shop_tool_type(player)
+	var description_y := list_top + SHOP_TOOL_TYPES.size() * row_height + 8.0
+	_multiline(
+		str(TOOL_DEFS[selected_type]["description"]),
+		Vector2(rect.position.x + 18, description_y),
+		rect.size.x - 36,
+		10,
+		MUTED_COLOR,
+		17,
+	)
+	var controls := "W/S 选择 · R 购买 · F 装卸 · H 准备" if player == "A" else "↑/↓ 选择 · Num1 购买 · Num3 装卸 · Num5 准备"
+	_text_center(
+		controls,
+		Rect2(Vector2(rect.position.x, rect.end.y - 56), Vector2(rect.size.x, 22)),
+		10,
+		TEXT_COLOR,
+	)
+	var ready_text := "已准备，等待对方" if bool(shop_ready[player]) else "尚未准备"
+	_text_center(
+		ready_text,
+		Rect2(Vector2(rect.position.x, rect.end.y - 31), Vector2(rect.size.x, 20)),
+		11,
+		accent if bool(shop_ready[player]) else MUTED_COLOR,
+	)
+
+
+func _draw_shop_overlay(size: Vector2) -> void:
+	draw_rect(Rect2(Vector2.ZERO, size), Color(0.015, 0.018, 0.015, 0.92))
+	_text_center(
+		"第 %d 局结算完成 · 局间商店" % current_round,
+		Rect2(Vector2(0, 15), Vector2(size.x, 34)),
+		23,
+		TEXT_COLOR,
+	)
+	_text_center(
+		"购买的道具进入个人仓库；装备最多3件，未使用道具可继承到后续局。",
+		Rect2(Vector2(0, 48), Vector2(size.x, 24)),
+		11,
+		MUTED_COLOR,
+	)
+	var margin := 32.0
+	var gap := 18.0
+	var panel_width := (size.x - margin * 2.0 - gap) / 2.0
+	var panels_top := 82.0
+	var panel_height := size.y - panels_top - 24.0
+	_draw_shop_player_panel(Rect2(margin, panels_top, panel_width, panel_height), "A")
+	_draw_shop_player_panel(Rect2(margin + panel_width + gap, panels_top, panel_width, panel_height), "B")
+
+
+func _draw_result_overlay(size: Vector2) -> void:
+	draw_rect(Rect2(Vector2.ZERO, size), Color(0.015, 0.018, 0.015, 0.86))
+	var card := Rect2(size / 2.0 - Vector2(320, 205), Vector2(640, 410))
+	draw_rect(card, PANEL_COLOR)
+	draw_rect(card, Color("#777d73"), false, 1)
+	_text_center(
+		"第 %d / %d 局结算" % [current_round, MATCH_ROUNDS],
+		Rect2(card.position + Vector2(0, 28), Vector2(card.size.x, 24)),
+		13,
+		MUTED_COLOR,
+	)
+	_multiline(outcome, card.position + Vector2(48, 82), card.size.x - 96, 18, TEXT_COLOR, 31, HORIZONTAL_ALIGNMENT_CENTER)
+	_text_center(
+		"当前金币　A：%d　B：%d" % [player_coins["A"], player_coins["B"]],
+		Rect2(card.position + Vector2(0, 205), Vector2(card.size.x, 25)),
+		14,
+		GOLD_COLOR,
+	)
+	_text_center(
+		"四局累计收入　A：%d　B：%d" % [match_totals["A"], match_totals["B"]],
+		Rect2(card.position + Vector2(0, 239), Vector2(card.size.x, 25)),
+		12,
+		MUTED_COLOR,
+	)
+	if current_round >= MATCH_ROUNDS:
+		var winner := "平局"
+		if int(match_totals["A"]) != int(match_totals["B"]):
+			winner = "玩家A获胜" if int(match_totals["A"]) > int(match_totals["B"]) else "玩家B获胜"
+		_text_center(
+			"四局结束 · %s" % winner,
+			Rect2(card.position + Vector2(0, 280), Vector2(card.size.x, 28)),
+			20,
+			TEXT_COLOR,
+		)
+	result_restart_rect = Rect2(card.position + Vector2(200, 336), Vector2(240, 46))
+	_draw_button(result_restart_rect, "开始新比赛" if current_round >= MATCH_ROUNDS else "进入局间商店")
+
+
+func _text(text: String, pos: Vector2, size: int, color: Color) -> void:
+	draw_string(font, pos, text, HORIZONTAL_ALIGNMENT_LEFT, -1, size, color)
+
+
+func _text_right(text: String, pos: Vector2, size: int, color: Color) -> void:
+	var width := font.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, size).x
+	draw_string(font, pos - Vector2(width, 0), text, HORIZONTAL_ALIGNMENT_LEFT, -1, size, color)
+
+
+func _text_center(text: String, rect: Rect2, size: int, color: Color) -> void:
+	var measured := font.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, size)
+	var baseline := rect.position + Vector2((rect.size.x - measured.x) / 2.0, (rect.size.y + measured.y * 0.65) / 2.0)
+	draw_string(font, baseline, text, HORIZONTAL_ALIGNMENT_LEFT, -1, size, color)
+
+
+func _multiline(text: String, pos: Vector2, width: float, size: int, color: Color, line_height: float, alignment := HORIZONTAL_ALIGNMENT_LEFT) -> void:
+	var lines := text.split("\n")
+	var y := pos.y
+	for line in lines:
+		if line.is_empty():
+			y += line_height
+			continue
+		draw_string(font, Vector2(pos.x, y), line, alignment, width, size, color)
+		y += line_height
