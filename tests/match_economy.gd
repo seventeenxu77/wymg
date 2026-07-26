@@ -65,6 +65,21 @@ func _initialize() -> void:
 	game._buy_selected_shop_tool("A")
 	assert(int(game.player_coins["A"]) == 48)
 	assert((game.player_stashes["A"] as Array).size() == 1)
+	assert((game.player_loadouts["A"] as Array).is_empty())
+	assert((game._shop_warehouse_items("A") as Array).size() == 1)
+	game.shop_focus["A"] = "warehouse"
+	game.warehouse_selected["A"] = 0
+	game._equip_selected_warehouse_item("A")
+	assert((game.player_loadouts["A"] as Array).size() == 1)
+	assert((game._shop_warehouse_items("A") as Array).is_empty())
+	assert((game._shop_equipped_items("A") as Array).size() == 1)
+
+	game.shop_focus["A"] = "loadout"
+	game.loadout_selected["A"] = 0
+	game._unequip_selected_loadout_item("A")
+	assert((game.player_loadouts["A"] as Array).is_empty())
+	assert((game._shop_warehouse_items("A") as Array).size() == 1)
+	game._equip_selected_warehouse_item("A")
 	assert((game.player_loadouts["A"] as Array).size() == 1)
 
 	game.shop_ready = {"A": true, "B": true}
@@ -75,6 +90,22 @@ func _initialize() -> void:
 	assert(game._player_for_role("thief") == "A")
 	assert((game.tool_inventories["thief"] as Array).size() == 1)
 	assert(str(game.tool_inventories["thief"][0]["tool_type"]) == "adrenaline")
+	game.phase = "hunt"
+	game.elapsed = 1.0
+	game.attack_until = 0.0
+	var right_attack := InputEventKey.new()
+	right_attack.keycode = KEY_KP_2
+	right_attack.pressed = true
+	game._input(right_attack)
+	assert(game.attack_until > game.elapsed)
+	game.pills = 1
+	game.thief["hp"] = 1
+	var left_pill := InputEventKey.new()
+	left_pill.physical_keycode = KEY_C
+	left_pill.pressed = true
+	game._input(left_pill)
+	assert(int(game.thief["hp"]) == 2)
+	assert(game.pills == 0)
 
 	game._end_round("测试第二局", false, true)
 	game._advance_from_result()

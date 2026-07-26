@@ -80,6 +80,12 @@ var player_loadouts: Dictionary:
 	get: return game.player_loadouts
 var shop_selected: Dictionary:
 	get: return game.shop_selected
+var shop_focus: Dictionary:
+	get: return game.shop_focus
+var warehouse_selected: Dictionary:
+	get: return game.warehouse_selected
+var loadout_selected: Dictionary:
+	get: return game.loadout_selected
 var shop_ready: Dictionary:
 	get: return game.shop_ready
 var match_totals: Dictionary:
@@ -123,6 +129,10 @@ func _player_for_role(role: String) -> String:
 	return game._player_for_role(role)
 
 
+func _role_for_player(player: String) -> String:
+	return game._role_for_player(player)
+
+
 func _active_storage_furniture() -> Dictionary:
 	return game._active_storage_furniture()
 
@@ -139,6 +149,14 @@ func _selected_shop_tool_type(player: String) -> String:
 	return game._selected_shop_tool_type(player)
 
 
+func _shop_warehouse_items(player: String) -> Array:
+	return game._shop_warehouse_items(player)
+
+
+func _shop_equipped_items(player: String) -> Array:
+	return game._shop_equipped_items(player)
+
+
 func _direction_vector(direction: String) -> Vector2:
 	return game._direction_vector(direction)
 
@@ -149,8 +167,8 @@ func _draw() -> void:
 	var size := get_viewport_rect().size
 	draw_rect(Rect2(Vector2.ZERO, size), BG_COLOR)
 	var layout := _calculate_layout(size)
-	_draw_room_panel(layout["monster_panel"], layout["monster_room"], "monster")
-	_draw_room_panel(layout["thief_panel"], layout["thief_room"], "thief")
+	_draw_room_panel(layout["monster_panel"], layout["monster_room"], _role_for_player("A"))
+	_draw_room_panel(layout["thief_panel"], layout["thief_room"], _role_for_player("B"))
 	if phase == "ready":
 		_draw_countdown_overlay(size)
 	elif phase == "shop":
@@ -287,7 +305,7 @@ func _draw_role_status(room_rect: Rect2, role: String) -> void:
 	var message := ""
 	var color := GOLD_COLOR
 	if str(trapped_by.get(role, "")) != "":
-		var key_hint := "A/D" if role == "monster" else "←/→"
+		var key_hint := "A/D" if _player_for_role(role) == "A" else "←/→"
 		message = "被捕！%s交替按压 %d / %d" % [key_hint, trap_escape_progress[role], TRAP_ESCAPE_PRESSES]
 		color = MONSTER_COLOR
 	else:
@@ -350,11 +368,11 @@ func _draw_nearby_tool_panel(room_rect: Rect2, role: String) -> void:
 		elif str(item.get("kind", "")) in ["tool", "device"] and tool_inventories[role].size() >= TOOL_INVENTORY_CAPACITY:
 			hint = "道具栏已满"
 		else:
-			hint = "R 拾取" if role == "monster" else "Num1 拾取"
+			hint = "R 拾取" if _player_for_role(role) == "A" else "Num1 拾取"
 	elif tool_type == "teleporter" and role == "monster":
 		hint = "仅盗贼可用"
 	elif tool_type == "phonograph" and state == "idle" and str(item.get("owner", "")) == role:
-		hint = "F 启动" if role == "monster" else "Num3 启动"
+		hint = "F 启动" if _player_for_role(role) == "A" else "Num3 启动"
 	_text_right(hint, panel.position + Vector2(panel.size.x - 15, 25), 10, accent)
 
 
@@ -378,11 +396,11 @@ func _draw_view_minimap(room_rect: Rect2, role: String) -> void:
 	draw_rect(map_rect.grow(7), MONSTER_COLOR if role == "monster" else THIEF_COLOR, false, 1.5)
 	_draw_minimap(map_rect, role)
 	if not expanded:
-		_text("TAB" if role == "monster" else "N8", map_rect.position + Vector2(4, 12), 8, Color(1, 1, 1, 0.7))
+		_text("TAB" if _player_for_role(role) == "A" else "N8", map_rect.position + Vector2(4, 12), 8, Color(1, 1, 1, 0.7))
 
 
 func _map_expanded(role: String) -> bool:
-	return Input.is_key_pressed(KEY_TAB) if role == "monster" else Input.is_key_pressed(KEY_KP_8)
+	return Input.is_key_pressed(KEY_TAB) if _player_for_role(role) == "A" else Input.is_key_pressed(KEY_KP_8)
 
 
 func _draw_help_overlay(room_rect: Rect2, role: String) -> void:
@@ -402,18 +420,27 @@ func _draw_help_overlay(room_rect: Rect2, role: String) -> void:
 		+ "· 捕兽夹需左右键严格交替20次挣脱；传送器轰鸣5秒后撤离。"
 	)
 	_multiline(rules, card.position + Vector2(34, 78), card.size.x - 68, 11, MUTED_COLOR, 22)
+	var player := _player_for_role(role)
 	var controls := ""
-	if role == "monster":
+	if player == "A":
 		controls = (
-			"WASD 移动　G 撞击　空格 攻击　R 拾取\n"
-			+ "Z/X 选择道具　F 使用　Q/E 转动视角　Tab 地图\n"
-			+ "H 结束藏宝　家具面板：W/S 选择　R 存取　Esc 关闭"
+			"WASD 移动　G 撞击　R 拾取　Q/E 转动视角\n"
+			+ "Z/X 选择道具　F 使用　Tab 地图　F1 帮助\n"
+			+ (
+				"空格 攻击　H 结束藏宝　家具面板：W/S 选择、R 存取"
+				if role == "monster"
+				else "C 使用药丸　V 撤离"
+			)
 		)
 	else:
 		controls = (
-			"方向键 移动　Num0 撞击　Num1 拾取　Num2 药丸\n"
-			+ "Num4/6 选择道具　Num3 使用　Num5 撤离\n"
-			+ "Num7/9 转动视角　按住 Num8 地图　Num+ 帮助"
+			"方向键 移动　Num0 撞击　Num1 拾取　Num7/9 转视角\n"
+			+ "Num4/6 选择道具　Num3 使用　Num8 地图　Num+ 帮助\n"
+			+ (
+				"Num2 攻击　Num5 结束藏宝　家具面板：↑/↓ 选择、Num1 存取"
+				if role == "monster"
+				else "Num2 使用药丸　Num5 撤离"
+			)
 		)
 	var controls_title_y := minf(card.position.y + 286.0, card.end.y - 132.0)
 	_text("完整键位", Vector2(card.position.x + 34, controls_title_y), 13, accent)
@@ -425,7 +452,7 @@ func _draw_help_overlay(room_rect: Rect2, role: String) -> void:
 		TEXT_COLOR,
 		20,
 	)
-	var close_label := "F1 / Esc 关闭" if role == "monster" else "Num+ / Esc 关闭"
+	var close_label := "F1 / Esc 关闭" if player == "A" else "Num+ / Esc 关闭"
 	_text_center(close_label, Rect2(Vector2(card.position.x, card.end.y - 48), Vector2(card.size.x, 25)), 11, accent)
 
 
@@ -442,7 +469,12 @@ func _draw_storage_exchange(room_rect: Rect2) -> void:
 	draw_rect(overlay, GOLD_COLOR, false, 2.0)
 	var title_rect := Rect2(overlay.position, Vector2(overlay.size.x, 34.0))
 	draw_rect(title_rect, Color("#25271f"))
-	_text("家具已打开 · W/S 选择 · R 存取 · Esc 关闭", title_rect.position + Vector2(12, 22), 11, GOLD_COLOR)
+	var storage_controls := (
+		"W/S 选择 · R 存取"
+		if _player_for_role("monster") == "A"
+		else "↑/↓ 选择 · Num1 存取"
+	)
+	_text("家具已打开 · %s · Esc 关闭" % storage_controls, title_rect.position + Vector2(12, 22), 11, GOLD_COLOR)
 
 	var gap := 10.0
 	var column_width := (overlay.size.x - 34.0 - gap) / 2.0
@@ -754,6 +786,80 @@ func _equipped_tool_count(player: String, tool_type: String) -> int:
 	return count
 
 
+func _shop_column_items(player: String, column: String) -> Array:
+	if column == "warehouse":
+		return _shop_warehouse_items(player)
+	if column == "loadout":
+		return _shop_equipped_items(player)
+	var products: Array = []
+	for tool_type in SHOP_TOOL_TYPES:
+		products.append({"tool_type": str(tool_type)})
+	return products
+
+
+func _shop_column_selected(player: String, column: String) -> int:
+	if column == "warehouse":
+		return int(warehouse_selected[player])
+	if column == "loadout":
+		return int(loadout_selected[player])
+	return int(shop_selected[player])
+
+
+func _shop_focused_tool_type(player: String) -> String:
+	var column := str(shop_focus[player])
+	var items := _shop_column_items(player, column)
+	if items.is_empty():
+		return ""
+	var selected := clampi(_shop_column_selected(player, column), 0, items.size() - 1)
+	return str((items[selected] as Dictionary).get("tool_type", ""))
+
+
+func _draw_shop_column(rect: Rect2, player: String, column: String, title: String, accent: Color) -> void:
+	var focused := str(shop_focus[player]) == column
+	draw_rect(rect, PANEL_ALT)
+	draw_rect(rect, accent if focused else LINE_COLOR, false, 2.0 if focused else 1.0)
+	var header := Rect2(rect.position, Vector2(rect.size.x, 30.0))
+	draw_rect(header, Color(accent, 0.16) if focused else Color("#20231f"))
+	_text_center(title, header, 11, accent if focused else TEXT_COLOR)
+
+	var items := _shop_column_items(player, column)
+	if items.is_empty():
+		_text_center(
+			"暂无道具",
+			Rect2(rect.position + Vector2(0, 46), Vector2(rect.size.x, 30)),
+			10,
+			MUTED_COLOR,
+		)
+		return
+	var selected := clampi(_shop_column_selected(player, column), 0, items.size() - 1)
+	var row_height := 43.0
+	var visible_count := maxi(1, int((rect.size.y - 38.0) / row_height))
+	var first := clampi(selected - visible_count / 2, 0, maxi(items.size() - visible_count, 0))
+	var last := mini(first + visible_count, items.size())
+	for item_index in range(first, last):
+		var tool: Dictionary = items[item_index]
+		var tool_type := str(tool.get("tool_type", ""))
+		var definition: Dictionary = TOOL_DEFS[tool_type]
+		var row := Rect2(
+			Vector2(rect.position.x + 5, rect.position.y + 34 + (item_index - first) * row_height),
+			Vector2(rect.size.x - 10, row_height - 4),
+		)
+		var row_selected := item_index == selected
+		draw_rect(row, Color(accent, 0.14) if row_selected else Color("#181b18"))
+		if row_selected:
+			draw_rect(row, accent, false, 1.0)
+		var marker := "▶ " if row_selected else "   "
+		_text("%s%s" % [marker, definition["label"]], row.position + Vector2(6, 16), 10, TEXT_COLOR)
+		var detail := ""
+		if column == "products":
+			detail = "%d 金币" % int(definition["price"])
+		elif column == "warehouse":
+			detail = "未装备"
+		else:
+			detail = "装备槽 %d / 3" % (item_index + 1)
+		_text("%s%s" % ["   ", detail], row.position + Vector2(6, 32), 8, MUTED_COLOR)
+
+
 func _draw_shop_player_panel(rect: Rect2, player: String) -> void:
 	var accent := MONSTER_COLOR if player == "A" else THIEF_COLOR
 	draw_rect(rect, PANEL_COLOR)
@@ -770,58 +876,47 @@ func _draw_shop_player_panel(rect: Rect2, player: String) -> void:
 		TEXT_COLOR,
 	)
 	_text(
-		"仓库 %d件 · 已装备 %d/3" % [
-			(player_stashes[player] as Array).size(),
+		"仓库未装备 %d件 · 已装备 %d/3" % [
+			_shop_warehouse_items(player).size(),
 			(player_loadouts[player] as Array).size(),
 		],
 		rect.position + Vector2(18, 54),
 		10,
 		MUTED_COLOR,
 	)
-	var row_height := 43.0
-	var list_top := rect.position.y + 70.0
-	for index in range(SHOP_TOOL_TYPES.size()):
-		var tool_type := str(SHOP_TOOL_TYPES[index])
-		var definition: Dictionary = TOOL_DEFS[tool_type]
-		var row := Rect2(
-			Vector2(rect.position.x + 14, list_top + index * row_height),
-			Vector2(rect.size.x - 28, row_height - 4),
-		)
-		if index == int(shop_selected[player]):
-			draw_rect(row, Color(accent, 0.15))
-			draw_rect(row, accent, false, 1.5)
-		else:
-			draw_rect(row, PANEL_ALT)
-		var marker := "▶ " if index == int(shop_selected[player]) else "   "
-		_text(
-			"%s%s · %d金币" % [marker, definition["label"], definition["price"]],
-			row.position + Vector2(8, 17),
-			11,
-			TEXT_COLOR,
-		)
-		_text(
-			"仓库%d / 装备%d" % [
-				_stash_tool_count(player, tool_type),
-				_equipped_tool_count(player, tool_type),
-			],
-			row.position + Vector2(8, 33),
-			9,
-			MUTED_COLOR,
-		)
-	var selected_type := _selected_shop_tool_type(player)
-	var description_y := list_top + SHOP_TOOL_TYPES.size() * row_height + 8.0
+
+	var gap := 6.0
+	var columns_top := rect.position.y + 72.0
+	var columns_bottom := rect.end.y - 118.0
+	var column_width := (rect.size.x - 28.0 - gap * 2.0) / 3.0
+	var column_height := maxf(columns_bottom - columns_top, 120.0)
+	var first_column := Rect2(Vector2(rect.position.x + 14, columns_top), Vector2(column_width, column_height))
+	var second_column := Rect2(Vector2(first_column.end.x + gap, columns_top), first_column.size)
+	var third_column := Rect2(Vector2(second_column.end.x + gap, columns_top), first_column.size)
+	_draw_shop_column(first_column, player, "products", "商品", accent)
+	_draw_shop_column(second_column, player, "warehouse", "仓库", accent)
+	_draw_shop_column(third_column, player, "loadout", "装备", accent)
+
+	var focused_type := _shop_focused_tool_type(player)
+	var description := "此栏暂无道具。"
+	if focused_type != "":
+		description = str(TOOL_DEFS[focused_type]["description"])
 	_multiline(
-		str(TOOL_DEFS[selected_type]["description"]),
-		Vector2(rect.position.x + 18, description_y),
+		description,
+		Vector2(rect.position.x + 18, rect.end.y - 105),
 		rect.size.x - 36,
-		10,
+		9,
 		MUTED_COLOR,
-		17,
+		15,
 	)
-	var controls := "W/S 选择 · R 购买 · F 装卸 · H 准备" if player == "A" else "↑/↓ 选择 · Num1 购买 · Num3 装卸 · Num5 准备"
+	var controls := (
+		"A/D 切换栏 · W/S 选择 · R 购买/装备/卸下 · H 准备"
+		if player == "A"
+		else "Num4/6 切换栏 · ↑/↓ 选择 · Num1 购买/装备/卸下 · Num5 准备"
+	)
 	_text_center(
 		controls,
-		Rect2(Vector2(rect.position.x, rect.end.y - 56), Vector2(rect.size.x, 22)),
+		Rect2(Vector2(rect.position.x, rect.end.y - 55), Vector2(rect.size.x, 22)),
 		10,
 		TEXT_COLOR,
 	)

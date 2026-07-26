@@ -357,8 +357,9 @@ func _displace_actor(role: String, displacement: Vector2) -> void:
 func _handle_trap_escape_input(role: String, key: Key, physical: Key) -> bool:
 	if str(trapped_by.get(role, "")) == "":
 		return false
-	var pressed_left := physical == KEY_A if role == "monster" else key == KEY_LEFT
-	var pressed_right := physical == KEY_D if role == "monster" else key == KEY_RIGHT
+	var player := _player_for_role(role)
+	var pressed_left := physical == KEY_A if player == "A" else key == KEY_LEFT
+	var pressed_right := physical == KEY_D if player == "A" else key == KEY_RIGHT
 	if not pressed_left and not pressed_right:
 		return false
 	var expects_left: bool = bool(trap_expected_left[role])

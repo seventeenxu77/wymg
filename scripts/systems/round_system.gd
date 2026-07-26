@@ -46,12 +46,15 @@ func _handle_shop_input(key: Key, physical: Key) -> void:
 	elif physical == KEY_S:
 		player = "A"
 		action = "next"
+	elif physical == KEY_A:
+		player = "A"
+		action = "focus_left"
+	elif physical == KEY_D:
+		player = "A"
+		action = "focus_right"
 	elif physical == KEY_R:
 		player = "A"
-		action = "buy"
-	elif physical == KEY_F:
-		player = "A"
-		action = "equip"
+		action = "activate"
 	elif physical == KEY_H:
 		player = "A"
 		action = "ready"
@@ -61,32 +64,71 @@ func _handle_shop_input(key: Key, physical: Key) -> void:
 	elif key == KEY_DOWN:
 		player = "B"
 		action = "next"
+	elif key == KEY_KP_4:
+		player = "B"
+		action = "focus_left"
+	elif key == KEY_KP_6:
+		player = "B"
+		action = "focus_right"
 	elif key == KEY_KP_1:
 		player = "B"
-		action = "buy"
-	elif key == KEY_KP_3:
-		player = "B"
-		action = "equip"
+		action = "activate"
 	elif key == KEY_KP_5:
 		player = "B"
 		action = "ready"
 	if player == "":
 		return
 	if action == "previous":
-		shop_selected[player] = posmod(int(shop_selected[player]) - 1, SHOP_TOOL_TYPES.size())
-		shop_ready[player] = false
+		_move_shop_selection(player, -1)
 	elif action == "next":
-		shop_selected[player] = posmod(int(shop_selected[player]) + 1, SHOP_TOOL_TYPES.size())
-		shop_ready[player] = false
-	elif action == "buy":
-		_buy_selected_shop_tool(player)
-	elif action == "equip":
-		_toggle_selected_shop_tool(player)
+		_move_shop_selection(player, 1)
+	elif action == "focus_left":
+		_move_shop_focus(player, -1)
+	elif action == "focus_right":
+		_move_shop_focus(player, 1)
+	elif action == "activate":
+		_activate_shop_focus(player)
 	else:
 		shop_ready[player] = not bool(shop_ready[player])
 	if bool(shop_ready["A"]) and bool(shop_ready["B"]):
 		current_round += 1
 		_start_round()
+
+
+func _move_shop_focus(player: String, direction: int) -> void:
+	var columns := ["products", "warehouse", "loadout"]
+	var current_index := columns.find(str(shop_focus[player]))
+	shop_focus[player] = columns[posmod(current_index + direction, columns.size())]
+	shop_ready[player] = false
+
+
+func _move_shop_selection(player: String, direction: int) -> void:
+	match str(shop_focus[player]):
+		"warehouse":
+			var items := _shop_warehouse_items(player)
+			warehouse_selected[player] = (
+				posmod(int(warehouse_selected[player]) + direction, items.size())
+				if not items.is_empty() else 0
+			)
+		"loadout":
+			var items := _shop_equipped_items(player)
+			loadout_selected[player] = (
+				posmod(int(loadout_selected[player]) + direction, items.size())
+				if not items.is_empty() else 0
+			)
+		_:
+			shop_selected[player] = posmod(int(shop_selected[player]) + direction, SHOP_TOOL_TYPES.size())
+	shop_ready[player] = false
+
+
+func _activate_shop_focus(player: String) -> void:
+	match str(shop_focus[player]):
+		"warehouse":
+			_equip_selected_warehouse_item(player)
+		"loadout":
+			_unequip_selected_loadout_item(player)
+		_:
+			_buy_selected_shop_tool(player)
 
 
 func _execute_gm_command(command_line: String) -> void:
@@ -193,35 +235,67 @@ func _buy_selected_shop_tool(player: String) -> void:
 	next_device_id += 1
 	var tool := _make_tool_instance(tool_type, id)
 	(player_stashes[player] as Array).append(tool)
-	if (player_loadouts[player] as Array).size() < TOOL_INVENTORY_CAPACITY:
-		(player_loadouts[player] as Array).append(id)
-	_push_log("玩家%s购买了%s。" % [player, TOOL_DEFS[tool_type]["label"]])
+	warehouse_selected[player] = maxi(_shop_warehouse_items(player).size() - 1, 0)
+	_push_log("玩家%s购买了%s，已放入仓库。" % [player, TOOL_DEFS[tool_type]["label"]])
+	shop_ready[player] = false
+
+
+func _shop_warehouse_items(player: String) -> Array:
+	var result: Array = []
+	var loadout: Array = player_loadouts[player]
+	for tool in player_stashes[player]:
+		if not loadout.has(str(tool.get("id", ""))):
+			result.append(tool)
+	return result
+
+
+func _shop_equipped_items(player: String) -> Array:
+	var result: Array = []
+	var stash: Array = player_stashes[player]
+	for equipped_id in player_loadouts[player]:
+		for tool in stash:
+			if str(tool.get("id", "")) == str(equipped_id):
+				result.append(tool)
+				break
+	return result
+
+
+func _equip_selected_warehouse_item(player: String) -> void:
+	var loadout: Array = player_loadouts[player]
+	if loadout.size() >= TOOL_INVENTORY_CAPACITY:
+		_push_log("玩家%s的出战栏已满（最多3件）。" % player)
+		return
+	var available := _shop_warehouse_items(player)
+	if available.is_empty():
+		_push_log("玩家%s的仓库中没有未装备道具。" % player)
+		return
+	var index := clampi(int(warehouse_selected[player]), 0, available.size() - 1)
+	var tool: Dictionary = available[index]
+	loadout.append(str(tool["id"]))
+	warehouse_selected[player] = mini(index, maxi(_shop_warehouse_items(player).size() - 1, 0))
+	loadout_selected[player] = loadout.size() - 1
+	_push_log("玩家%s装备了%s。" % [player, TOOL_DEFS[str(tool["tool_type"])]["label"]])
+	shop_ready[player] = false
+
+
+func _unequip_selected_loadout_item(player: String) -> void:
+	var equipped := _shop_equipped_items(player)
+	if equipped.is_empty():
+		_push_log("玩家%s的装备栏是空的。" % player)
+		return
+	var index := clampi(int(loadout_selected[player]), 0, equipped.size() - 1)
+	var tool: Dictionary = equipped[index]
+	(player_loadouts[player] as Array).erase(str(tool["id"]))
+	loadout_selected[player] = mini(index, maxi(_shop_equipped_items(player).size() - 1, 0))
+	warehouse_selected[player] = maxi(_shop_warehouse_items(player).size() - 1, 0)
+	_push_log("玩家%s卸下了%s，已放回仓库。" % [player, TOOL_DEFS[str(tool["tool_type"])]["label"]])
 	shop_ready[player] = false
 
 
 func _toggle_selected_shop_tool(player: String) -> void:
-	var tool_type := _selected_shop_tool_type(player)
-	var loadout: Array = player_loadouts[player]
-	var stash: Array = player_stashes[player]
-	for index in range(loadout.size()):
-		var equipped_id := str(loadout[index])
-		for tool in stash:
-			if str(tool.get("id", "")) == equipped_id and str(tool.get("tool_type", "")) == tool_type:
-				loadout.remove_at(index)
-				_push_log("玩家%s卸下了%s。" % [player, TOOL_DEFS[tool_type]["label"]])
-				shop_ready[player] = false
-				return
-	if loadout.size() >= TOOL_INVENTORY_CAPACITY:
-		_push_log("玩家%s的出战栏已满（最多3件）。" % player)
-		return
-	for tool in stash:
-		if str(tool.get("tool_type", "")) != tool_type or loadout.has(str(tool.get("id", ""))):
-			continue
-		loadout.append(str(tool["id"]))
-		_push_log("玩家%s装备了%s。" % [player, TOOL_DEFS[tool_type]["label"]])
-		shop_ready[player] = false
-		return
-	_push_log("玩家%s仓库中没有%s，请先购买。" % [player, TOOL_DEFS[tool_type]["label"]])
+	# Compatibility entry point for older tests/tools: explicitly equip the
+	# selected warehouse item rather than coupling equipment to product choice.
+	_equip_selected_warehouse_item(player)
 
 
 func _return_round_tools_to_stashes() -> void:
@@ -283,7 +357,10 @@ func _advance_from_result() -> void:
 	phase = "shop"
 	shop_ready = {"A": false, "B": false}
 	shop_selected = {"A": 0, "B": 0}
-	logs = ["局间商店开启：购买后可装备至多3件道具。"]
+	shop_focus = {"A": "products", "B": "products"}
+	warehouse_selected = {"A": 0, "B": 0}
+	loadout_selected = {"A": 0, "B": 0}
+	logs = ["局间商店开启：购买只进入仓库，再从仓库选择至多3件装备。"]
 	result_restart_rect = Rect2()
 
 
