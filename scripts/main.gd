@@ -37,6 +37,8 @@ const TELEPORT_CHANNEL_SECONDS := 5.0
 const SPRING_GLOVE_REACH := 1.45
 const SPRING_GLOVE_KNOCKBACK := 1.2
 const SPRING_GLOVE_STUN_SECONDS := 1.0
+const TOOL_INSPECT_DISTANCE := 1.05
+const PICKUP_DISTANCE := 0.64
 const NOISE_SAMPLE_RATE := 11025
 const ENTRANCE_ROOM := Vector2i(0, 5)
 const ENTRANCE_POS := Vector2(0.5, 4.5)
@@ -72,14 +74,54 @@ const TREASURES := [
 const TRINKETS := ["旧怀表", "银汤匙", "铜制烟盒", "珍珠纽扣"]
 
 const TOOL_DEFS := {
-	"detector": {"label": "藏品探测器", "short": "探测", "color": Color("#78d7e8")},
-	"alarm": {"label": "警报器", "short": "警报", "color": Color("#f0735f")},
-	"trap": {"label": "捕兽夹", "short": "兽夹", "color": Color("#c6a66a")},
-	"adrenaline": {"label": "肾上腺素", "short": "加速", "color": Color("#e45b68")},
-	"decoy": {"label": "替身玩偶", "short": "替身", "color": Color("#b98be2")},
-	"phonograph": {"label": "留声机", "short": "留声", "color": Color("#d49a5b")},
-	"teleporter": {"label": "传送器", "short": "传送", "color": Color("#68c8ff")},
-	"spring_glove": {"label": "弹簧拳套", "short": "拳套", "color": Color("#f1c65a")},
+	"detector": {
+		"label": "藏品探测器",
+		"short": "探测",
+		"description": "开启后探测同一房间内的藏品信号，电量有限。",
+		"color": Color("#78d7e8"),
+	},
+	"alarm": {
+		"label": "警报器",
+		"short": "警报",
+		"description": "藏进完好家具；家具被撞开后全图鸣响5秒。",
+		"color": Color("#f0735f"),
+	},
+	"trap": {
+		"label": "捕兽夹",
+		"short": "兽夹",
+		"description": "放置在地面，踩中者需左右交替20次才能挣脱。",
+		"color": Color("#c6a66a"),
+	},
+	"adrenaline": {
+		"label": "肾上腺素",
+		"short": "加速",
+		"description": "速度翻倍6秒，随后进入3秒减速疲劳。",
+		"color": Color("#e45b68"),
+	},
+	"decoy": {
+		"label": "替身玩偶",
+		"short": "替身",
+		"description": "留下一个替身，同时向面朝方向快速位移。",
+		"color": Color("#b98be2"),
+	},
+	"phonograph": {
+		"label": "留声机",
+		"short": "留声",
+		"description": "放置后再次靠近启动，延迟播放10秒撞击声。",
+		"color": Color("#d49a5b"),
+	},
+	"teleporter": {
+		"label": "传送器",
+		"short": "传送",
+		"description": "仅盗贼可用；轰鸣5秒后携带全部藏品撤离。",
+		"color": Color("#68c8ff"),
+	},
+	"spring_glove": {
+		"label": "弹簧拳套",
+		"short": "拳套",
+		"description": "击退相邻敌人并使其眩晕1秒，一次性使用。",
+		"color": Color("#f1c65a"),
+	},
 }
 
 const TOOL_SPAWN_COUNTS := {
@@ -1363,23 +1405,10 @@ func _pick_up_nearby(role: String) -> void:
 	var nearest: Dictionary = {}
 	var nearest_distance := INF
 	for item in room["items"]:
-		if bool(item.get("collected", false)):
-			continue
-		var is_tool := str(item.get("kind", "")) == "tool"
-		var is_recovered_trap := (
-			str(item.get("kind", "")) == "device"
-			and str(item.get("device_type", "")) == "trap"
-			and str(item.get("state", "")) == "recoverable"
-		)
-		var is_loot := str(item.get("kind", "")) in ["treasure", "trinket", "pill"]
-		if role == "monster" and not (is_tool or is_recovered_trap):
-			continue
-		if role == "thief" and not (is_tool or is_recovered_trap or is_loot):
-			continue
-		if role == "monster" and str(item.get("tool_type", "")) == "teleporter":
+		if not _role_can_pick_up_item(role, item):
 			continue
 		var distance := (item["pos"] as Vector2).distance_to(actor["pos"])
-		if distance <= 0.64 and distance < nearest_distance:
+		if distance <= PICKUP_DISTANCE and distance < nearest_distance:
 			nearest = item
 			nearest_distance = distance
 	if nearest.is_empty():
@@ -1422,6 +1451,51 @@ func _pick_up_nearby(role: String) -> void:
 		_push_log("盗贼捡到一颗治疗药丸。")
 	_add_noise("thief", "拾取物品")
 	_reveal_thief()
+
+
+func _role_can_pick_up_item(role: String, item: Dictionary) -> bool:
+	if bool(item.get("collected", false)):
+		return false
+	var is_tool := str(item.get("kind", "")) == "tool"
+	var is_recovered_trap := (
+		str(item.get("kind", "")) == "device"
+		and str(item.get("device_type", "")) == "trap"
+		and str(item.get("state", "")) == "recoverable"
+	)
+	var is_loot := str(item.get("kind", "")) in ["treasure", "trinket", "pill"]
+	if role == "monster" and not (is_tool or is_recovered_trap):
+		return false
+	if role == "thief" and not (is_tool or is_recovered_trap or is_loot):
+		return false
+	if role == "monster" and str(item.get("tool_type", "")) == "teleporter":
+		return false
+	return true
+
+
+func _nearby_tool_for_panel(role: String) -> Dictionary:
+	var actor := _get_actor(role)
+	if actor.is_empty():
+		return {}
+	var room := _room_at(actor["room"])
+	var nearest: Dictionary = {}
+	var nearest_distance := INF
+	for item in room["items"]:
+		if bool(item.get("collected", false)):
+			continue
+		var kind := str(item.get("kind", ""))
+		var device_type := str(item.get("device_type", ""))
+		if kind != "tool" and (kind != "device" or device_type == "decoy"):
+			continue
+		var tool_type := str(item.get("tool_type", device_type))
+		if not TOOL_DEFS.has(tool_type):
+			continue
+		var distance := (item["pos"] as Vector2).distance_to(actor["pos"])
+		if distance <= TOOL_INSPECT_DISTANCE and distance < nearest_distance:
+			nearest = item
+			nearest_distance = distance
+	if nearest.is_empty():
+		return {}
+	return {"item": nearest, "distance": nearest_distance}
 
 
 func _thief_search() -> void:
@@ -1946,6 +2020,7 @@ func _draw_room_panel(panel: Rect2, room_rect: Rect2, role: String) -> void:
 		_draw_storage_exchange(room_rect)
 	_draw_view_minimap(room_rect, role)
 	_draw_role_status(room_rect, role)
+	_draw_nearby_tool_panel(room_rect, role)
 	if bool(help_open[role]):
 		_draw_help_overlay(room_rect, role)
 	var footer := Rect2(panel.position.x, room_rect.end.y + 10, panel.size.x, panel.end.y - room_rect.end.y - 10)
@@ -2002,6 +2077,52 @@ func _draw_role_status(room_rect: Rect2, role: String) -> void:
 	draw_rect(status_rect, Color(0.04, 0.045, 0.04, 0.92))
 	draw_rect(status_rect, color, false, 2.0)
 	_text_center(message, status_rect, 12, color)
+
+
+func _draw_nearby_tool_panel(room_rect: Rect2, role: String) -> void:
+	if bool(help_open[role]) or (role == "monster" and not _active_storage_furniture().is_empty()):
+		return
+	var nearby := _nearby_tool_for_panel(role)
+	if nearby.is_empty():
+		return
+	var item: Dictionary = nearby["item"]
+	var tool_type := str(item.get("tool_type", item.get("device_type", "")))
+	var definition: Dictionary = TOOL_DEFS[tool_type]
+	var accent: Color = definition["color"]
+	var panel_width := minf(room_rect.size.x - 32.0, 520.0)
+	var panel := Rect2(
+		Vector2(room_rect.get_center().x - panel_width / 2.0, room_rect.end.y - 88.0),
+		Vector2(panel_width, 70.0),
+	)
+	draw_rect(panel, Color(0.035, 0.04, 0.035, 0.96))
+	draw_rect(panel, Color(accent, 0.9), false, 1.5)
+	draw_rect(Rect2(panel.position, Vector2(5.0, panel.size.y)), accent)
+
+	var title := str(definition["label"])
+	var state := str(item.get("state", ""))
+	if tool_type == "trap" and state == "recoverable":
+		title += " · 可拾取"
+	elif tool_type == "phonograph" and state == "idle":
+		title += " · 待启动"
+	elif tool_type == "phonograph" and state == "playing":
+		title += " · 播放中"
+	_text(title, panel.position + Vector2(17, 25), 14, TEXT_COLOR)
+	_text(str(definition["description"]), panel.position + Vector2(17, 51), 10, MUTED_COLOR)
+
+	var hint := "已布置"
+	var distance := float(nearby["distance"])
+	if _role_can_pick_up_item(role, item):
+		if distance > PICKUP_DISTANCE:
+			hint = "继续靠近"
+		elif str(item.get("kind", "")) in ["tool", "device"] and tool_inventories[role].size() >= TOOL_INVENTORY_CAPACITY:
+			hint = "道具栏已满"
+		else:
+			hint = "R 拾取" if role == "monster" else "Num1 拾取"
+	elif tool_type == "teleporter" and role == "monster":
+		hint = "仅盗贼可用"
+	elif tool_type == "phonograph" and state == "idle" and str(item.get("owner", "")) == role:
+		hint = "F 启动" if role == "monster" else "Num3 启动"
+	_text_right(hint, panel.position + Vector2(panel.size.x - 15, 25), 10, accent)
 
 
 func _phase_short_label() -> String:
@@ -2156,7 +2277,10 @@ func _draw_room(rect: Rect2, role: String, room: Dictionary, actor: Dictionary) 
 	draw_rect(rect.grow(7), Color("#252620"))
 	if world_25d:
 		var view_texture: Texture2D = world_25d.texture_for(role)
-		draw_texture_rect(view_texture, rect, false)
+		if view_texture:
+			draw_texture_rect(view_texture, rect, false)
+		else:
+			draw_rect(rect, FLOOR_DARK)
 	else:
 		draw_rect(rect, FLOOR_DARK)
 	draw_rect(rect, Color("#777b70"), false, 2)

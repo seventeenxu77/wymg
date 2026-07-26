@@ -94,7 +94,10 @@ var trace_thief_material: StandardMaterial3D
 func setup(shared_world: World3D) -> void:
 	if initialized:
 		return
-	initialized = true
+	# The 2D editor viewport has no World3D even though @tool runs this setup.
+	# Give the preview SubViewports their own world instead of leaving setup
+	# half-finished and producing null-node errors every editor frame.
+	var render_world: World3D = shared_world if shared_world != null else World3D.new()
 	world_root = Node3D.new()
 	world_root.name = "World25D"
 	add_child(world_root)
@@ -105,16 +108,17 @@ func setup(shared_world: World3D) -> void:
 	_create_environment()
 	# Ensure both SubViewports receive the same environment by setting it
 	# directly on the shared World3D resource.
-	var env_node: WorldEnvironment = world_root.get_node("GothicEnvironment")
+	var env_node: WorldEnvironment = world_root.get_node_or_null("GothicEnvironment")
 	if env_node:
-		shared_world.environment = env_node.environment
-	monster_viewport = _create_viewport("MonsterViewport", shared_world)
-	thief_viewport = _create_viewport("ThiefViewport", shared_world)
+		render_world.environment = env_node.environment
+	monster_viewport = _create_viewport("MonsterViewport", render_world)
+	thief_viewport = _create_viewport("ThiefViewport", render_world)
 	monster_camera = _create_camera(monster_viewport, "MonsterCamera", LAYER_MONSTER_WORLD | LAYER_MONSTER | LAYER_SHARED_ACTORS | LAYER_AFTERIMAGE | LAYER_MONSTER_EFFECT | LAYER_MONSTER_GHOST)
 	thief_camera = _create_camera(thief_viewport, "ThiefCamera", LAYER_THIEF_WORLD | LAYER_THIEF | LAYER_SHARED_ACTORS | LAYER_THIEF_GHOST)
 	monster_node = _create_actor("monster", LAYER_MONSTER)
 	thief_node = _create_actor("thief", LAYER_THIEF)
 	attack_cone = _create_attack_cone()
+	initialized = true
 
 
 func _create_materials() -> void:
@@ -738,20 +742,6 @@ func _create_item_node(room: Vector2i, item: Dictionary) -> void:
 		value_label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
 		_register_room_visual(room, value_label)
 		node.add_child(value_label)
-	elif str(item.get("kind", "")) in ["tool", "device"] and str(item.get("device_type", "")) != "decoy":
-		var item_label := Label3D.new()
-		item_label.name = "ItemLabel"
-		item_label.text = str(item.get("label", "道具"))
-		item_label.font_size = 30
-		item_label.pixel_size = 0.0045
-		item_label.position = Vector3(0, 0.92, 0)
-		item_label.modulate = Color("#f4ead3")
-		item_label.outline_modulate = Color("#171814")
-		item_label.outline_size = 5
-		item_label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
-		item_label.no_depth_test = true
-		_register_room_visual(room, item_label)
-		node.add_child(item_label)
 	node.position = world_position(room, item["pos"])
 	item_nodes[item["id"]] = node
 
@@ -814,7 +804,16 @@ func _create_attack_cone() -> MeshInstance3D:
 
 
 func sync(rooms: Array, monster: Dictionary, thief: Dictionary, afterimages: Array, selected: Dictionary, attack_active: bool, time: float) -> void:
-	if not initialized:
+	if (
+		not initialized
+		or not is_instance_valid(monster_node)
+		or not is_instance_valid(thief_node)
+		or not is_instance_valid(monster_camera)
+		or not is_instance_valid(thief_camera)
+		or not is_instance_valid(attack_cone)
+		or monster.is_empty()
+		or thief.is_empty()
+	):
 		return
 	_sync_actor(monster_node, monster, time, false)
 	_sync_actor(thief_node, thief, time, true)
@@ -886,14 +885,6 @@ func sync(rooms: Array, monster: Dictionary, thief: Dictionary, afterimages: Arr
 				not bool(item["collected"])
 				and (item_kind in ["tool", "device"] or not _item_hidden(room, item))
 			)
-			var item_label: Label3D = item_node.get_node_or_null("ItemLabel")
-			if item_label:
-				if item_kind == "device" and str(item.get("device_type", "")) == "trap":
-					item_label.text = "可拾取捕兽夹" if str(item.get("state", "")) == "recoverable" else "捕兽夹"
-				elif item_kind == "device" and str(item.get("device_type", "")) == "phonograph":
-					item_label.text = "留声机（待启动）" if str(item.get("state", "")) == "idle" else "留声机"
-				else:
-					item_label.text = str(item.get("label", "道具"))
 			var item_sprite: Sprite3D = item_node.get_node_or_null("ItemSprite")
 			if (
 				item_sprite
@@ -1211,13 +1202,17 @@ func world_position(room: Vector2i, pos: Vector2, y := 0.0) -> Vector3:
 
 
 func texture_for(role: String) -> Texture2D:
+	if not initialized:
+		return null
 	if role == "monster":
-		return monster_viewport.get_texture()
-	return thief_viewport.get_texture()
+		return monster_viewport.get_texture() if is_instance_valid(monster_viewport) else null
+	return thief_viewport.get_texture() if is_instance_valid(thief_viewport) else null
 
 
 func project_normalized(role: String, room: Vector2i, pos: Vector2, y := 0.25) -> Vector2:
 	var camera := monster_camera if role == "monster" else thief_camera
 	var viewport := monster_viewport if role == "monster" else thief_viewport
+	if not initialized or not is_instance_valid(camera) or not is_instance_valid(viewport):
+		return Vector2(0.5, 0.5)
 	var pixel: Vector2 = camera.unproject_position(world_position(room, pos, y))
 	return pixel / Vector2(viewport.size)

@@ -11,6 +11,8 @@ func _initialize() -> void:
 
 	assert(game.TOOL_INVENTORY_CAPACITY == 3)
 	assert(game.TRAP_ESCAPE_PRESSES == 20)
+	for definition in game.TOOL_DEFS.values():
+		assert(not str(definition.get("description", "")).is_empty())
 	var tool_count := 0
 	var visible_tool_count := 0
 	var hidden_tool_count := 0
@@ -93,6 +95,13 @@ func _initialize() -> void:
 	storage["contents"].append(game._make_tool_instance("detector", "hidden-tool-test"))
 	assert(game._release_furniture_tools(test_room, storage) == 1)
 	assert(test_room["items"].back()["tool_type"] == "detector")
+	test_room["items"].back()["pos"] = game.monster["pos"] + Vector2(0.8, 0.0)
+	var nearby_panel: Dictionary = game._nearby_tool_for_panel("monster")
+	assert(not nearby_panel.is_empty())
+	assert(nearby_panel["item"]["tool_type"] == "detector")
+	assert(float(nearby_panel["distance"]) > game.PICKUP_DISTANCE)
+	test_room["items"].back()["pos"] = game.monster["pos"] + Vector2(1.2, 0.0)
+	assert(game._nearby_tool_for_panel("monster").is_empty())
 	test_room["items"].back()["collected"] = true
 
 	game.tool_inventories["monster"] = [game._make_tool_instance("trap", "trap-test")]
