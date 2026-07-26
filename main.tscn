@@ -1,7 +1,6 @@
-; Godot 4.7 native game scene
-[gd_scene load_steps=2 format=3]
+[gd_scene format=3 uid="uid://bivudqmt8i3kr"]
 
-[ext_resource type="Script" path="res://scripts/main.gd" id="1_main"]
+[ext_resource type="Script" uid="uid://bsn2ncexsa4dn" path="res://scripts/main.gd" id="1_main"]
 
-[node name="OldHouseGame" type="Node2D"]
+[node name="OldHouseGame" type="Node2D" unique_id=11055490]
 script = ExtResource("1_main")

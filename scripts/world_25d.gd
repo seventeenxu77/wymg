@@ -18,6 +18,8 @@ const LAYER_AFTERIMAGE := 8
 const LAYER_MONSTER_EFFECT := 16
 const LAYER_THIEF_WORLD := 32
 const LAYER_SHARED_ACTORS := 64
+const LAYER_MONSTER_GHOST := 128
+const LAYER_THIEF_GHOST := 256
 
 const FLOOR_TEXTURES := [
 	"res://GJGamejam素材/地板/木色地板2.png",
@@ -32,6 +34,15 @@ const FLOOR_TEXTURES := [
 	"res://GJGamejam素材/地板/像素地板7.png",
 	"res://GJGamejam素材/地板/像素地板8.png",
 	"res://GJGamejam素材/地板/像素地板9.png",
+]
+
+const CRACK_TEXTURES := [
+	"res://GJGamejam素材/地板/地板裂纹1.png",
+	"res://GJGamejam素材/地板/地板裂纹2.png",
+	"res://GJGamejam素材/地板/地板裂纹3.png",
+	"res://GJGamejam素材/地板/地板裂纹4.png",
+	"res://GJGamejam素材/地板/地板裂纹5.png",
+	"res://GJGamejam素材/地板/地板裂纹6.png",
 ]
 
 var initialized := false
@@ -51,6 +62,14 @@ var trace_nodes: Dictionary = {}
 var stroke_nodes: Dictionary = {}
 var afterimage_nodes: Dictionary = {}
 var room_visuals: Dictionary = {}
+var monster_ghost_visuals: Dictionary = {}
+var thief_ghost_visuals: Dictionary = {}
+var monster_ghost_shader: ShaderMaterial
+var thief_ghost_shader: ShaderMaterial
+var room_lights: Dictionary = {}
+const LIGHT_MAX_DIST := 4.8
+const LIGHT_MIN_BRIGHT := 0.15
+const LIGHT_MAX_BRIGHT := 1.0
 var active_monster_room := INVALID_ROOM
 var active_thief_room := INVALID_ROOM
 var camera_yaw_degrees := {
@@ -79,10 +98,15 @@ func setup(shared_world: World3D) -> void:
 	world_root.add_child(level_root)
 	_create_materials()
 	_create_environment()
+	# Ensure both SubViewports receive the same environment by setting it
+	# directly on the shared World3D resource.
+	var env_node: WorldEnvironment = world_root.get_node("GothicEnvironment")
+	if env_node:
+		shared_world.environment = env_node.environment
 	monster_viewport = _create_viewport("MonsterViewport", shared_world)
 	thief_viewport = _create_viewport("ThiefViewport", shared_world)
-	monster_camera = _create_camera(monster_viewport, "MonsterCamera", LAYER_MONSTER_WORLD | LAYER_MONSTER | LAYER_SHARED_ACTORS | LAYER_AFTERIMAGE | LAYER_MONSTER_EFFECT)
-	thief_camera = _create_camera(thief_viewport, "ThiefCamera", LAYER_THIEF_WORLD | LAYER_THIEF | LAYER_SHARED_ACTORS)
+	monster_camera = _create_camera(monster_viewport, "MonsterCamera", LAYER_MONSTER_WORLD | LAYER_MONSTER | LAYER_SHARED_ACTORS | LAYER_AFTERIMAGE | LAYER_MONSTER_EFFECT | LAYER_MONSTER_GHOST)
+	thief_camera = _create_camera(thief_viewport, "ThiefCamera", LAYER_THIEF_WORLD | LAYER_THIEF | LAYER_SHARED_ACTORS | LAYER_THIEF_GHOST)
 	monster_node = _create_actor("monster", LAYER_MONSTER)
 	thief_node = _create_actor("thief", LAYER_THIEF)
 	attack_cone = _create_attack_cone()
@@ -96,6 +120,7 @@ func _create_materials() -> void:
 	dark_material = _material(Color(0.035, 0.035, 0.03, 0.62), 1.0, true)
 	trace_monster_material = _material(Color("#5e2922"), 1.0)
 	trace_thief_material = _material(Color("#245a50"), 1.0)
+	_create_ghost_materials()
 
 
 func _material(color: Color, roughness: float, transparent := false, unshaded := false) -> StandardMaterial3D:
@@ -109,20 +134,21 @@ func _material(color: Color, roughness: float, transparent := false, unshaded :=
 	return material
 
 
-func _floor_texture_material(path: String) -> StandardMaterial3D:
-	var material := StandardMaterial3D.new()
-	material.albedo_texture = load(path)
-	material.roughness = 0.92
-	material.uv1_scale = Vector3(1, 1, 1)
+func _floor_texture_material(path: String) -> ShaderMaterial:
+	var shader := load("res://scripts/floor_light.gdshader") as Shader
+	var material := ShaderMaterial.new()
+	material.shader = shader
+	material.set_shader_parameter("floor_tex", load(path))
 	return material
 
 
 func _wall_texture_material() -> StandardMaterial3D:
 	var material := StandardMaterial3D.new()
 	material.albedo_texture = load("res://GJGamejam素材/墙壁.png")
-	material.roughness = 0.9
 	material.uv1_scale = Vector3(0.3, 0.3, 0.3)
 	material.uv1_triplanar = true
+	material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	material.albedo_color = Color(0.35, 0.35, 0.33)  # match dimmed floor mid-brightness
 	return material
 
 
@@ -134,7 +160,7 @@ func _create_environment() -> void:
 	environment.background_color = Color("#171814")
 	environment.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
 	environment.ambient_light_color = Color("#9f9a84")
-	environment.ambient_light_energy = 0.88
+	environment.ambient_light_energy = 0.25
 	environment.ambient_light_sky_contribution = 0.0
 	environment.tonemap_mode = Environment.TONE_MAPPER_FILMIC
 	environment_node.environment = environment
@@ -144,7 +170,7 @@ func _create_environment() -> void:
 	sun.name = "Moonlight"
 	sun.rotation_degrees = Vector3(-58, -38, 0)
 	sun.light_color = Color("#d8d3ba")
-	sun.light_energy = 1.28
+	sun.light_energy = 0.45
 	sun.shadow_enabled = false
 	world_root.add_child(sun)
 
@@ -186,6 +212,9 @@ func rebuild(rooms: Array) -> void:
 	trace_nodes.clear()
 	stroke_nodes.clear()
 	room_visuals.clear()
+	monster_ghost_visuals.clear()
+	thief_ghost_visuals.clear()
+	room_lights.clear()
 	active_monster_room = INVALID_ROOM
 	active_thief_room = INVALID_ROOM
 	for room in rooms:
@@ -199,43 +228,170 @@ func rebuild(rooms: Array) -> void:
 func _create_room(room: Dictionary) -> void:
 	var coord: Vector2i = room["coord"]
 	var origin := room_origin(coord)
+	var floor_node: MeshInstance3D  # Saved for light-position update after light creation
 
 	if room.has("floor_texture"):
 		# PlaneMesh with whole texture covering the room — no tiling
 		var floor := MeshInstance3D.new()
 		floor.name = "Floor_%d_%d" % [coord.x, coord.y]
 		var plane_mesh := PlaneMesh.new()
-		plane_mesh.size = Vector2(ROOM_EXTENT * 2.0, ROOM_EXTENT * 2.0)
+		var floor_size := ROOM_EXTENT * 2.0 - 0.3
+		plane_mesh.size = Vector2(floor_size, floor_size)
 		plane_mesh.orientation = PlaneMesh.FACE_Y
 		floor.mesh = plane_mesh
 		floor.material_override = _floor_texture_material(room["floor_texture"])
 		floor.position = origin + Vector3(0, -0.08, 0)
 		_register_room_visual(coord, floor)
 		level_root.add_child(floor)
+		floor_node = floor
 	else:
 		var floor := MeshInstance3D.new()
 		floor.name = "Floor_%d_%d" % [coord.x, coord.y]
 		var floor_mesh := BoxMesh.new()
-		floor_mesh.size = Vector3(ROOM_EXTENT * 2.0, 0.12, ROOM_EXTENT * 2.0)
+		var floor_size := ROOM_EXTENT * 2.0 - 0.3
+		floor_mesh.size = Vector3(floor_size, 0.12, floor_size)
 		floor.mesh = floor_mesh
 		floor.material_override = floor_material if (coord.x + coord.y) % 2 == 0 else floor_alt_material
 		floor.position = origin + Vector3(0, -0.08, 0)
 		_register_room_visual(coord, floor)
 		level_root.add_child(floor)
+		floor_node = floor
+
+	# Black outline strips around floor perimeter
+	var floor_tex: String = room.get("floor_texture", "")
+	_add_floor_outline(coord, origin, floor_tex)
+
+	# Random crack decals on floor
+	_add_floor_cracks(coord, origin)
 
 	var inset := MeshInstance3D.new()
 	var inset_mesh := BoxMesh.new()
 	inset_mesh.size = Vector3(ROOM_EXTENT * 2.0 - 0.7, 0.025, ROOM_EXTENT * 2.0 - 0.7)
 	inset.mesh = inset_mesh
-	inset.material_override = _material(Color(0.12, 0.115, 0.1, 0.13), 1.0, true)
+	inset.material_override = _material(Color(0.08, 0.075, 0.06, 0.18), 1.0, true)
 	inset.position = origin + Vector3(0, 0.002, 0)
 	_register_room_visual(coord, inset)
 	level_root.add_child(inset)
 
 	for side in ["up", "right", "down", "left"]:
 		_create_wall(coord, origin, side, room["doors"].has(side))
+	_create_room_lights(coord, origin)
+	# Update floor shader with the light position we just created
+	if floor_node and room.has("floor_texture"):
+		var lights: Array = room_lights.get(_room_key(coord), [])
+		if not lights.is_empty():
+			var mat: ShaderMaterial = floor_node.material_override as ShaderMaterial
+			if mat:
+				mat.set_shader_parameter("light_position", lights[0])
 	if coord == Vector2i(0, 5):
 		_create_exit_marker(coord)
+	_create_ghost_room(coord, origin, room["doors"])
+
+
+func _create_ghost_materials() -> void:
+	var shader := load("res://scripts/ghost_fade.gdshader") as Shader
+	if not shader:
+		push_error("Failed to load ghost_fade.gdshader")
+		return
+	monster_ghost_shader = ShaderMaterial.new()
+	monster_ghost_shader.shader = shader
+	thief_ghost_shader = ShaderMaterial.new()
+	thief_ghost_shader.shader = shader
+
+
+func _create_room_lights(coord: Vector2i, origin: Vector3) -> void:
+	var rng := RandomNumberGenerator.new()
+	rng.seed = hash(coord.x * 997 + coord.y * 1013 + 777)
+	# Invisible light source — random position within room
+	var light_pos := origin + Vector3(
+		rng.randf_range(-ROOM_EXTENT + 2.2, ROOM_EXTENT - 2.2),
+		0.025,
+		rng.randf_range(-ROOM_EXTENT + 2.2, ROOM_EXTENT - 2.2),
+	)
+	room_lights[_room_key(coord)] = [light_pos]
+
+
+func _create_ghost_room(coord: Vector2i, origin: Vector3, doors: Array) -> void:
+	var room_key := _room_key(coord)
+	var floor_size := ROOM_EXTENT * 2.0 - 0.3
+
+	# Ghost floor — one copy per ghost layer
+	for layer in [LAYER_MONSTER_GHOST, LAYER_THIEF_GHOST]:
+		var mat := monster_ghost_shader if layer == LAYER_MONSTER_GHOST else thief_ghost_shader
+		var ghost_floor := MeshInstance3D.new()
+		ghost_floor.name = "GhostFloor_%d_%d" % [coord.x, coord.y]
+		var plane := PlaneMesh.new()
+		plane.size = Vector2(floor_size, floor_size)
+		plane.orientation = PlaneMesh.FACE_Y
+		ghost_floor.mesh = plane
+		ghost_floor.material_override = mat
+		ghost_floor.position = origin + Vector3(0, -0.06, 0)
+		ghost_floor.layers = layer
+		level_root.add_child(ghost_floor)
+		if layer == LAYER_MONSTER_GHOST:
+			if not monster_ghost_visuals.has(room_key):
+				monster_ghost_visuals[room_key] = []
+			monster_ghost_visuals[room_key].append(ghost_floor)
+		else:
+			if not thief_ghost_visuals.has(room_key):
+				thief_ghost_visuals[room_key] = []
+			thief_ghost_visuals[room_key].append(ghost_floor)
+
+	# Ghost walls with door openings — one copy per ghost layer
+	var height := 1.05
+	var total := ROOM_EXTENT * 2.0
+	var gap := 2.65
+	for side in ["up", "right", "down", "left"]:
+		var has_door: bool = doors.has(side)
+		for layer in [LAYER_MONSTER_GHOST, LAYER_THIEF_GHOST]:
+			var mat := monster_ghost_shader if layer == LAYER_MONSTER_GHOST else thief_ghost_shader
+			if not has_door:
+				_add_ghost_wall_piece(coord, origin, side, 0.0, total, height, layer, mat)
+			else:
+				var segment := (total - gap) / 2.0
+				var offset := gap / 2.0 + segment / 2.0
+				_add_ghost_wall_piece(coord, origin, side, -offset, segment, height, layer, mat)
+				_add_ghost_wall_piece(coord, origin, side, offset, segment, height, layer, mat)
+				# Ghost door posts
+				var post_height := height + 0.2
+				for post_offset in [-gap / 2.0, gap / 2.0]:
+					var post := MeshInstance3D.new()
+					var post_mesh := BoxMesh.new()
+					post_mesh.size = Vector3(0.16, post_height, 0.16)
+					post.mesh = post_mesh
+					post.material_override = mat
+					if side == "up" or side == "down":
+						post.position = origin + Vector3(post_offset, post_height / 2.0, -ROOM_EXTENT if side == "up" else ROOM_EXTENT)
+					else:
+						post.position = origin + Vector3(-ROOM_EXTENT if side == "left" else ROOM_EXTENT, post_height / 2.0, post_offset)
+					post.layers = layer
+					level_root.add_child(post)
+					if layer == LAYER_MONSTER_GHOST:
+						monster_ghost_visuals[room_key].append(post)
+					else:
+						thief_ghost_visuals[room_key].append(post)
+
+
+func _add_ghost_wall_piece(coord: Vector2i, origin: Vector3, side: String, offset: float, length: float, height: float, layer: int, mat: ShaderMaterial) -> void:
+	var room_key := _room_key(coord)
+	var wall := MeshInstance3D.new()
+	var mesh := BoxMesh.new()
+	if side == "up" or side == "down":
+		var z := -ROOM_EXTENT if side == "up" else ROOM_EXTENT
+		mesh.size = Vector3(length, height, 0.18)
+		wall.position = origin + Vector3(offset, height / 2.0, z)
+	else:
+		var x := -ROOM_EXTENT if side == "left" else ROOM_EXTENT
+		mesh.size = Vector3(0.18, height, length)
+		wall.position = origin + Vector3(x, height / 2.0, offset)
+	wall.mesh = mesh
+	wall.material_override = mat
+	wall.layers = layer
+	level_root.add_child(wall)
+	if layer == LAYER_MONSTER_GHOST:
+		monster_ghost_visuals[room_key].append(wall)
+	else:
+		thief_ghost_visuals[room_key].append(wall)
 
 
 func _create_exit_marker(room: Vector2i) -> void:
@@ -283,15 +439,108 @@ func _add_wall_piece(room: Vector2i, origin: Vector3, side: String, offset: floa
 	var wall := MeshInstance3D.new()
 	var mesh := BoxMesh.new()
 	if side == "up" or side == "down":
+		var z := -ROOM_EXTENT if side == "up" else ROOM_EXTENT
 		mesh.size = Vector3(length, height, 0.18)
-		wall.position = origin + Vector3(offset, height / 2.0, -ROOM_EXTENT if side == "up" else ROOM_EXTENT)
+		wall.position = origin + Vector3(offset, height / 2.0, z)
+		_add_wall_outline_strips(room, origin, offset, length, height, z, true)
 	else:
+		var x := -ROOM_EXTENT if side == "left" else ROOM_EXTENT
 		mesh.size = Vector3(0.18, height, length)
-		wall.position = origin + Vector3(-ROOM_EXTENT if side == "left" else ROOM_EXTENT, height / 2.0, offset)
+		wall.position = origin + Vector3(x, height / 2.0, offset)
+		_add_wall_outline_strips(room, origin, offset, length, height, x, false)
 	wall.mesh = mesh
 	wall.material_override = material
 	_register_room_visual(room, wall)
 	level_root.add_child(wall)
+
+
+func _add_wall_outline_strips(room: Vector2i, origin: Vector3, offset: float, length: float, height: float, wall_axis: float, is_z_axis: bool) -> void:
+	var strip_thick := 0.03
+	var strip_off := 0.005
+	var half := length / 2.0
+	var mat := _material(Color.BLACK, 0.9, false, true)
+	# Top strip
+	_create_strip(room, origin, offset, height, half, wall_axis, strip_thick, strip_off, is_z_axis, true, length, height, mat)
+	# Bottom strip
+	_create_strip(room, origin, offset, 0.0, half, wall_axis, strip_thick, strip_off, is_z_axis, true, length, height, mat)
+	# Left/front strip
+	_create_strip(room, origin, offset - half, height / 2.0, half, wall_axis, strip_thick, strip_off, is_z_axis, false, length, height, mat)
+	# Right/back strip
+	_create_strip(room, origin, offset + half, height / 2.0, half, wall_axis, strip_thick, strip_off, is_z_axis, false, length, height, mat)
+
+
+func _create_strip(room: Vector2i, origin: Vector3, pos: float, pos_y: float, half: float, wall_axis: float, strip_thick: float, strip_off: float, is_z: bool, is_horiz: bool, wall_len: float, wall_h: float, mat: Material) -> void:
+	var strip := MeshInstance3D.new()
+	var strip_mesh := BoxMesh.new()
+	if is_z:
+		if is_horiz:
+			strip_mesh.size = Vector3(wall_len, strip_thick, 0.18)
+		else:
+			strip_mesh.size = Vector3(strip_thick, wall_h, 0.18)
+		strip.position = origin + Vector3(pos, pos_y, wall_axis + strip_off)
+	else:
+		if is_horiz:
+			strip_mesh.size = Vector3(0.18, strip_thick, wall_len)
+		else:
+			strip_mesh.size = Vector3(0.18, wall_h, strip_thick)
+		strip.position = origin + Vector3(wall_axis + strip_off, pos_y, pos)
+	strip.mesh = strip_mesh
+	strip.material_override = mat
+	_register_room_visual(room, strip)
+	level_root.add_child(strip)
+
+
+func _add_floor_outline(room: Vector2i, origin: Vector3, floor_tex: String) -> void:
+	var half: float = ROOM_EXTENT - 0.15
+	# Wooden floors keep thin outline; pixel floors get 2x thicker
+	var is_wooden := floor_tex.contains("木色")
+	var strip_w := 0.06 if is_wooden else 0.06
+	var strip_y := -0.07
+	var strip_off := 0.005
+	var mat := _material(Color.BLACK, 0.9, false, true)
+	var floor_len := ROOM_EXTENT * 2.0 - 0.3
+	for i in range(4):
+		var strip := MeshInstance3D.new()
+		var mesh := BoxMesh.new()
+		if i < 2:
+			# X-axis strips (top/bottom edges)
+			mesh.size = Vector3(floor_len, strip_w, strip_w)
+			var z := -half if i == 0 else half
+			strip.position = origin + Vector3(0, strip_y, z + strip_off * (1 if i == 0 else -1))
+		else:
+			# Z-axis strips (left/right edges)
+			mesh.size = Vector3(strip_w, strip_w, floor_len)
+			var x := -half if i == 2 else half
+			strip.position = origin + Vector3(x + strip_off * (1 if i == 2 else -1), strip_y, 0)
+		strip.mesh = mesh
+		strip.material_override = mat
+		_register_room_visual(room, strip)
+		level_root.add_child(strip)
+
+
+func _add_floor_cracks(room: Vector2i, origin: Vector3) -> void:
+	var rng := RandomNumberGenerator.new()
+	rng.seed = hash(room.x * 997 + room.y * 1013)
+	var count := rng.randi_range(4, 8)
+	var extent: float = ROOM_EXTENT - 0.4
+	var crack_y := -0.065
+	for _i in range(count):
+		var crack := Sprite3D.new()
+		crack.name = "Crack_%d_%d_%d" % [room.x, room.y, _i]
+		var tex_idx := rng.randi_range(0, CRACK_TEXTURES.size() - 1)
+		crack.texture = load(CRACK_TEXTURES[tex_idx])
+		crack.pixel_size = 0.009
+		crack.position = origin + Vector3(
+			rng.randf_range(-extent, extent),
+			crack_y,
+			rng.randf_range(-extent, extent),
+		)
+		crack.rotation_degrees = Vector3(-90, rng.randf_range(0, 360), 0)
+		crack.modulate = Color.BLACK
+		crack.shaded = false
+		crack.billboard = BaseMaterial3D.BILLBOARD_DISABLED
+		_register_room_visual(room, crack)
+		level_root.add_child(crack)
 
 
 func _add_door_post(room: Vector2i, origin: Vector3, side: String, offset: float, height: float) -> void:
@@ -326,10 +575,11 @@ func _create_actor(role: String, layer: int) -> Node3D:
 	var sway_pivot := Node3D.new()
 	sway_pivot.name = "SwayPivot"
 	actor.add_child(sway_pivot)
+	var sprite_pixel_size: float = 0.00263 if role == "monster" else 0.00270
 	var outline := Sprite3D.new()
 	outline.name = "OutlineSprite"
 	outline.texture = load("res://GJGamejam素材/人物/怪物.png" if role == "monster" else "res://GJGamejam素材/人物/主角.png")
-	outline.pixel_size = (0.00263 if role == "monster" else 0.00270) * 1.12
+	outline.pixel_size = sprite_pixel_size * 1.08
 	outline.position.y = 0.84
 	outline.modulate = Color.BLACK
 	outline.billboard = BaseMaterial3D.BILLBOARD_ENABLED
@@ -338,7 +588,7 @@ func _create_actor(role: String, layer: int) -> Node3D:
 	var sprite := Sprite3D.new()
 	sprite.name = "PaperSprite"
 	sprite.texture = load("res://GJGamejam素材/人物/怪物.png" if role == "monster" else "res://GJGamejam素材/人物/主角.png")
-	sprite.pixel_size = 0.00263 if role == "monster" else 0.00270
+	sprite.pixel_size = sprite_pixel_size
 	sprite.position.y = 0.86
 	sprite.billboard = BaseMaterial3D.BILLBOARD_ENABLED
 	sprite.layers = layer
@@ -385,11 +635,14 @@ func _create_furniture_node(room: Vector2i, furniture: Dictionary) -> void:
 	_register_room_visual(room, selection)
 	selection.visible = false
 	node.add_child(selection)
+	var outline_y: float = info.get("sprite_y", 0.9) - 0.02
+	var sprite_y: float = info.get("sprite_y", 0.9)
+	var ps: float = info["pixel_size"]
 	var outline := Sprite3D.new()
 	outline.name = "OutlineSprite"
 	outline.texture = load(info["path"])
-	outline.pixel_size = info["pixel_size"] * 1.12
-	outline.position.y = 0.88
+	outline.pixel_size = ps * 1.08
+	outline.position.y = outline_y
 	outline.modulate = Color.BLACK
 	outline.billboard = BaseMaterial3D.BILLBOARD_ENABLED
 	_register_room_visual(room, outline)
@@ -397,8 +650,8 @@ func _create_furniture_node(room: Vector2i, furniture: Dictionary) -> void:
 	var sprite := Sprite3D.new()
 	sprite.name = "PaperSprite"
 	sprite.texture = load(info["path"])
-	sprite.pixel_size = info["pixel_size"]
-	sprite.position.y = 0.9
+	sprite.pixel_size = ps
+	sprite.position.y = sprite_y
 	sprite.billboard = BaseMaterial3D.BILLBOARD_ENABLED
 	_register_room_visual(room, sprite)
 	node.add_child(sprite)
@@ -421,9 +674,8 @@ func _create_furniture_node(room: Vector2i, furniture: Dictionary) -> void:
 
 func _furniture_info(kind: String) -> Dictionary:
 	match kind:
-		"床": return {"size": Vector3(1.74, 0.175, 0.87), "path": "res://GJGamejam素材/2.5D物品/ff_bed_clean.png", "pixel_size": 0.03868, "sel_radius": 0.78, "shadow_radius": 0.72}
-		"衣柜": return {"size": Vector3(0.87, 0.425, 0.87), "path": "res://GJGamejam素材/2.5D物品/ff_wardrobe_clean.png", "pixel_size": 0.03868, "sel_radius": 0.78, "shadow_radius": 0.60}
-		"书柜": return {"size": Vector3(1.0, 0.375, 0.87), "path": "res://GJGamejam素材/2.5D物品/ff_bookshelf_clean.png", "pixel_size": 0.03868, "sel_radius": 0.78, "shadow_radius": 0.62}
+		"衣柜": return {"size": Vector3(0.87, 0.425, 0.87), "path": "res://GJGamejam素材/2.5D物品/ff_wardrobe_clean.png", "pixel_size": 0.03868, "sel_radius": 0.78, "shadow_radius": 0.60, "sprite_y": 1.21}
+		"书柜": return {"size": Vector3(1.0, 0.375, 0.87), "path": "res://GJGamejam素材/2.5D物品/ff_bookshelf_clean.png", "pixel_size": 0.03868, "sel_radius": 0.78, "shadow_radius": 0.62, "sprite_y": 1.21}
 		"木桶": return {"size": Vector3(0.5, 0.45, 0.5), "path": "res://GJGamejam素材/2.5D物品/lp_barrel_clean.png", "pixel_size": 0.01112, "sel_radius": 0.42, "shadow_radius": 0.35}
 		"木箱": return {"size": Vector3(0.6, 0.45, 0.6), "path": "res://GJGamejam素材/2.5D物品/lp_crate_clean.png", "pixel_size": 0.01334, "sel_radius": 0.48, "shadow_radius": 0.42}
 		"花瓶": return {"size": Vector3(0.28, 0.42, 0.28), "path": "res://GJGamejam素材/2.5D物品/lp_vase_clean.png", "pixel_size": 0.00622, "sel_radius": 0.28, "shadow_radius": 0.22}
@@ -493,6 +745,13 @@ func sync(rooms: Array, monster: Dictionary, thief: Dictionary, afterimages: Arr
 				_create_furniture_node(coord, furniture)
 			var furniture_node: Node3D = furniture_nodes[furniture_id]
 			furniture_node.position = world_position(coord, furniture["pos"])
+			var furn_brightness := _light_brightness_at(_room_key(coord), furniture_node.position)
+			var furn_sprite: Sprite3D = furniture_node.get_node_or_null("PaperSprite")
+			if furn_sprite:
+				furn_sprite.modulate = Color(furn_brightness, furn_brightness, furn_brightness)
+			var furn_outline: Sprite3D = furniture_node.get_node_or_null("OutlineSprite")
+			if furn_outline:
+				furn_outline.modulate = Color.BLACK  # Outline stays black
 			var content_value := _furniture_content_value(furniture)
 			var shake_degrees := 0.0
 			if not bool(furniture.get("destroyed", false)) and content_value > 0:
@@ -527,6 +786,7 @@ func sync(rooms: Array, monster: Dictionary, thief: Dictionary, afterimages: Arr
 	_sync_afterimages(afterimages, monster["room"], thief["room"])
 	_sync_attack(monster, attack_active)
 	_sync_room_layers(monster["room"], thief["room"])
+	_sync_ghost_visibility(monster, thief)
 
 
 func _furniture_content_value(furniture: Dictionary) -> int:
@@ -543,18 +803,23 @@ func _sync_actor(node: Node3D, actor: Dictionary, time: float, is_thief: bool) -
 	if not pivot:
 		return
 	var sprite: Sprite3D = pivot.get_node_or_null("PaperSprite")
+	var outline: Sprite3D = pivot.get_node_or_null("OutlineSprite")
 	if not sprite:
 		return
-	var outline: Sprite3D = pivot.get_node_or_null("OutlineSprite")
 	var dir: String = actor["dir"]
 	sprite.flip_h = dir == "left"
 	if outline:
 		outline.flip_h = sprite.flip_h
+	var brightness := _light_brightness_at(_room_key(actor["room"]), node.position)
+	sprite.modulate = Color(brightness, brightness, brightness)
+	# Outline always stays black — it's a silhouette border, not lit
 	var phase_offset := 1.6 if is_thief else 0.0
 	var moving: bool = actor.get("moving", false)
 	if moving:
-		# Up/down bobbing during movement
-		pivot.position = Vector3(0, sin(time * 14.0 + phase_offset) * 0.35, 0)
+		# Checker-piece jump: sharp rise, brief peak, sharp fall (顿挫感)
+		var t: float = fmod(time * 4 + phase_offset, 1.0)
+		var jump: float = pow(sin(t * PI), 4.0)
+		pivot.position = Vector3(0, jump * 0.60, 0)
 		pivot.rotation.z = 0.0
 	else:
 		# Left/right swaying when idle
@@ -715,6 +980,55 @@ func _sync_room_layers(monster_room: Vector2i, thief_room: Vector2i) -> void:
 				var instance := visual as VisualInstance3D
 				if instance.layers != desired_layers:
 					instance.layers = desired_layers
+	# Toggle ghost visibility: show ghosts for rooms at Manhattan distance 1..2 (九宫格)
+	for key in monster_ghost_visuals.keys():
+		var coord := Vector2i(int(key.split(":")[0]), int(key.split(":")[1]))
+		var dist := _manhattan_distance(coord, monster_room)
+		var show := dist >= 1 and dist <= 2
+		for visual in monster_ghost_visuals[key]:
+			if is_instance_valid(visual):
+				visual.layers = LAYER_MONSTER_GHOST if show else 0
+	for key in thief_ghost_visuals.keys():
+		var coord := Vector2i(int(key.split(":")[0]), int(key.split(":")[1]))
+		var dist := _manhattan_distance(coord, thief_room)
+		var show := dist >= 1 and dist <= 2
+		for visual in thief_ghost_visuals[key]:
+			if is_instance_valid(visual):
+				visual.layers = LAYER_THIEF_GHOST if show else 0
+
+
+func _manhattan_distance(a: Vector2i, b: Vector2i) -> int:
+	return absi(a.x - b.x) + absi(a.y - b.y)
+
+
+func _light_brightness_at(room_key: String, world_pos: Vector3) -> float:
+	if not room_lights:
+		return LIGHT_MIN_BRIGHT
+	var lights: Array = room_lights.get(room_key, [])
+	if lights.is_empty():
+		return LIGHT_MIN_BRIGHT
+	var nearest_sq := INF
+	for light in lights:
+		var light_pos: Vector3 = light
+		var dx := world_pos.x - light_pos.x
+		var dz := world_pos.z - light_pos.z
+		var dist_sq := dx * dx + dz * dz
+		if dist_sq < nearest_sq:
+			nearest_sq = dist_sq
+	var dist := sqrt(nearest_sq)
+	var t := clampf(dist / LIGHT_MAX_DIST, 0.0, 1.0)
+	t = t * t  # Quadratic falloff for softer transition
+	return lerpf(LIGHT_MAX_BRIGHT, LIGHT_MIN_BRIGHT, t)
+
+
+func _sync_ghost_visibility(monster: Dictionary, thief: Dictionary) -> void:
+	if not monster_ghost_shader or not thief_ghost_shader:
+		return
+	# Update shader uniforms with exact player world positions
+	monster_ghost_shader.set_shader_parameter("player_position",
+		world_position(monster["room"], monster["pos"], 0.38))
+	thief_ghost_shader.set_shader_parameter("player_position",
+		world_position(thief["room"], thief["pos"], 0.38))
 
 
 func _layers_for_room_key(key: String) -> int:

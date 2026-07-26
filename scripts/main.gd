@@ -377,7 +377,7 @@ func _generate_rooms() -> Array:
 			if not neighbor["doors"].has(edge["opposite"]):
 				neighbor["doors"].append(edge["opposite"])
 
-	var kinds := ["床", "衣柜", "书柜", "木桶", "木箱", "花瓶"]
+	var kinds := ["衣柜", "书柜", "木桶", "木箱", "花瓶"]
 	var floor_textures := WORLD_25D_SCRIPT.FLOOR_TEXTURES
 	for room in generated:
 		room["floor_texture"] = floor_textures[rng.randi_range(0, floor_textures.size() - 1)]
@@ -435,7 +435,7 @@ func _furniture_durability(kind: String) -> int:
 	match kind:
 		"花瓶": return 1
 		"木桶": return 2
-		"床", "木箱": return 3
+		"木箱": return 3
 		_: return 4
 
 
