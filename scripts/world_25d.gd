@@ -827,6 +827,8 @@ func sync(rooms: Array, monster: Dictionary, thief: Dictionary, afterimages: Arr
 		or thief.is_empty()
 	):
 		return
+	if not monster_node or not thief_node or not monster_camera or not thief_camera:
+		return
 	_sync_actor(monster_node, monster, time, false)
 	_sync_actor(thief_node, thief, time, true)
 	var actors_share_room: bool = monster["room"] == thief["room"]
@@ -943,6 +945,8 @@ func _furniture_content_value(furniture: Dictionary) -> int:
 
 
 func _sync_actor(node: Node3D, actor: Dictionary, time: float, is_thief: bool) -> void:
+	if not node or not is_instance_valid(node):
+		return
 	var visual_pos: Vector2 = actor["pos"] + actor.get("impact_visual_offset", Vector2.ZERO)
 	node.position = world_position(actor["room"], visual_pos)
 	var pivot: Node3D = node.get_node_or_null("SwayPivot")
@@ -973,6 +977,8 @@ func _sync_actor(node: Node3D, actor: Dictionary, time: float, is_thief: bool) -
 
 
 func _set_actor_visual_layers(node: Node, layers: int) -> void:
+	if not node or not is_instance_valid(node):
+		return
 	for child in node.get_children():
 		if child is VisualInstance3D:
 			(child as VisualInstance3D).layers = layers
@@ -980,6 +986,8 @@ func _set_actor_visual_layers(node: Node, layers: int) -> void:
 
 
 func _follow_camera(camera: Camera3D, actor: Dictionary, role: String) -> void:
+	if not camera or not is_instance_valid(camera):
+		return
 	var target := world_position(actor["room"], actor["pos"], 0.38)
 	# Zero degrees is deliberately aligned with the room axes:
 	# screen right = world +X, screen up = world -Z.
@@ -1002,6 +1010,8 @@ func camera_relative_vector(role: String, screen_input: Vector2) -> Vector2:
 
 
 func _sync_attack(monster: Dictionary, active: bool) -> void:
+	if not attack_cone or not is_instance_valid(attack_cone):
+		return
 	attack_cone.visible = active
 	if not active:
 		return
