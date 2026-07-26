@@ -100,7 +100,9 @@ var wall_fades: Dictionary = {}
 var room_pillars: Dictionary = {}
 var furniture_bounces: Dictionary = {}
 const WALL_FADE_DURATION := 0.4
-const FURNITURE_BOUNCE_DURATION := 1.0
+const FURNITURE_BOUNCE_DURATION := 1.3
+const FURNITURE_FALL_DURATION := 0.3
+const FURNITURE_DROP_HEIGHT := 10.0
 
 const FULL_WALL_HEIGHT := 8.5
 
@@ -1028,6 +1030,14 @@ func sync(rooms: Array, monster: Dictionary, thief: Dictionary, afterimages: Arr
 	_set_actor_visual_layers(thief_node, LAYER_THIEF | (LAYER_SHARED_ACTORS if actors_share_room else 0))
 	_follow_camera(monster_camera, monster, "monster")
 	_follow_camera(thief_camera, thief, "thief")
+	# Trigger furniture bounce BEFORE the room loop so furniture
+	# appears at drop height on the very first frame of a new room.
+	var m_rk := _room_key(monster["room"])
+	var t_rk := _room_key(thief["room"])
+	if m_rk != _room_key(active_monster_room):
+		furniture_bounces[m_rk] = time
+	if t_rk != _room_key(active_thief_room):
+		furniture_bounces[t_rk] = time
 	for room in rooms:
 		var coord: Vector2i = room["coord"]
 		for furniture in room["furniture"]:
@@ -1436,8 +1446,14 @@ func _furniture_bounce_offset(room_key: String, game_time: float) -> float:
 	var elapsed := game_time - start_time
 	if elapsed >= FURNITURE_BOUNCE_DURATION or elapsed < 0.0:
 		return 0.0
-	# Damped sine: 3-4 oscillations, amplitude decays to ~0 after 1s
-	return 0.22 * exp(-elapsed * 5.0) * sin(elapsed * TAU * 3.5)
+	# Phase 1 — drop from height
+	if elapsed < FURNITURE_FALL_DURATION:
+		var t := elapsed / FURNITURE_FALL_DURATION
+		return FURNITURE_DROP_HEIGHT * (1.0 - t * t)  # quadratic ease-in (gravity)
+	# Phase 2 — damped bounce after landing
+	var bounce_t := elapsed - FURNITURE_FALL_DURATION
+	var bounce_duration := FURNITURE_BOUNCE_DURATION - FURNITURE_FALL_DURATION
+	return 0.25 * exp(-bounce_t * 7.0) * abs(sin(bounce_t * TAU * 4.0))
 
 
 func _sync_ghost_visibility(monster: Dictionary, thief: Dictionary) -> void:
