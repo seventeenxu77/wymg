@@ -238,13 +238,15 @@ func _run() -> void:
 	for generated_room in game.rooms:
 		for generated_furniture in generated_room["furniture"]:
 			assert(generated_furniture.has("contents"))
+			assert(generated_furniture.has("base_durability"))
 			assert(generated_furniture.has("durability"))
+			assert(int(generated_furniture["durability"]) == game._effective_furniture_durability(generated_furniture))
 			for generated_content in generated_furniture["contents"]:
 				assert(str(generated_content["kind"]) in ["trinket", "tool"])
 				if generated_content["kind"] == "trinket":
 					assert(int(generated_content["value"]) == 1)
 				else:
-					assert(game.TOOL_DEFS.has(str(generated_content["tool_type"])))
+					assert(str(generated_content["tool_type"]) == "adrenaline")
 
 	game.new_game()
 	var storage_room: Dictionary = game._room_at(game.monster["room"])
@@ -261,6 +263,7 @@ func _run() -> void:
 		"opened": false,
 		"destroyed": false,
 		"damage": 0,
+		"base_durability": 3,
 		"durability": 3,
 		"contents": [],
 		"last_hit_time": -10.0,
@@ -297,7 +300,9 @@ func _run() -> void:
 	_press_key(game, KEY_R, KEY_R)
 	assert(test_storage["contents"].size() == 1)
 	assert(test_storage["contents"][0]["id"] == "treasure-2")
+	assert(int(test_storage["durability"]) == 5)
 	assert(renderer._furniture_content_value(test_storage) == 2)
+	test_storage["last_hit_time"] = -10.0
 	renderer.sync(game.rooms, game.monster, game.thief, game.afterimages, game.dragging, false, game.elapsed)
 	var storage_rotation_before: float = (renderer.furniture_nodes["test-storage"] as Node3D).rotation.y
 	renderer.sync(game.rooms, game.monster, game.thief, game.afterimages, game.dragging, false, game.elapsed + 0.07)
@@ -330,6 +335,8 @@ func _run() -> void:
 		"label": "旧怀表",
 		"value": 1,
 	})
+	game._refresh_furniture_durability(test_storage)
+	assert(int(test_storage["durability"]) == 6)
 	assert(renderer._furniture_content_value(test_storage) == 2)
 
 	game.phase = "hunt"
@@ -337,12 +344,11 @@ func _run() -> void:
 	game.thief["pos"] = Vector2(2.5, 2.5)
 	game.thief["dir"] = "right"
 	game.thief["facing"] = Vector2.RIGHT
-	game._hit_furniture("thief")
-	game._update_furniture_hit_actions(game.HIT_WINDUP_TIME + game.HIT_LUNGE_TIME + game.HIT_RECOVER_TIME)
-	game._hit_furniture("thief")
-	game._update_furniture_hit_actions(game.HIT_WINDUP_TIME + game.HIT_LUNGE_TIME + game.HIT_RECOVER_TIME)
+	for hit_index in range(5):
+		game._hit_furniture("thief")
+		game._update_furniture_hit_actions(game.HIT_WINDUP_TIME + game.HIT_LUNGE_TIME + game.HIT_RECOVER_TIME)
 	assert(not bool(test_storage["destroyed"]))
-	assert(int(test_storage["damage"]) == 2)
+	assert(int(test_storage["damage"]) == 5)
 	game._hit_furniture("thief")
 	game._update_furniture_hit_actions(game.HIT_WINDUP_TIME + game.HIT_LUNGE_TIME + game.HIT_RECOVER_TIME)
 	assert(bool(test_storage["destroyed"]))
@@ -365,6 +371,7 @@ func _run() -> void:
 	assert(game.extracted_value == 3)
 
 	print("2.5D smoke test passed: movement, room visibility, storage damage, loot carrying, and one-time extraction.")
+	game.free()
 	quit(0)
 
 

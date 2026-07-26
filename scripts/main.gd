@@ -17,7 +17,7 @@ const FURNITURE_HIT_REACH := 1.35
 const FURNITURE_HIT_DOT := 0.62
 const TRINKET_SPAWN_CHANCE := 0.5
 const PILL_SPAWN_COUNT := 3
-const HIDDEN_TOOL_RATIO := 0.5
+const HIDDEN_ADRENALINE_COUNT := 4
 const HIT_WINDUP_TIME := 0.16
 const HIT_LUNGE_TIME := 0.14
 const HIT_RECOVER_TIME := 0.16
@@ -42,6 +42,9 @@ const SPRING_GLOVE_STUN_SECONDS := 1.0
 const TOOL_INSPECT_DISTANCE := 1.05
 const PICKUP_DISTANCE := 0.64
 const NOISE_SAMPLE_RATE := 11025
+const MATCH_ROUNDS := 4
+const HUNT_SECONDS := 8 * 60
+const COINS_PER_LOOT_VALUE := 5
 const ENTRANCE_ROOM := Vector2i(0, 5)
 const ENTRANCE_POS := Vector2(0.5, 4.5)
 const MONSTER_SPAWN_ROOM := Vector2i(5, 0)
@@ -81,60 +84,77 @@ const TOOL_DEFS := {
 		"short": "探测",
 		"description": "开启后探测同一房间内的藏品信号，电量有限。",
 		"color": Color("#78d7e8"),
+		"price": 5,
 	},
 	"alarm": {
 		"label": "警报器",
 		"short": "警报",
 		"description": "藏进完好家具；家具被撞开后全图鸣响5秒。",
 		"color": Color("#f0735f"),
+		"price": 2,
 	},
 	"trap": {
 		"label": "捕兽夹",
 		"short": "兽夹",
 		"description": "放置在地面，踩中者需左右交替20次才能挣脱。",
 		"color": Color("#c6a66a"),
+		"price": 3,
 	},
 	"adrenaline": {
 		"label": "肾上腺素",
 		"short": "加速",
 		"description": "速度翻倍6秒，随后进入3秒减速疲劳。",
 		"color": Color("#e45b68"),
+		"price": 2,
 	},
 	"decoy": {
 		"label": "替身玩偶",
 		"short": "替身",
 		"description": "留下一个替身，同时向面朝方向快速位移。",
 		"color": Color("#b98be2"),
+		"price": 3,
 	},
 	"phonograph": {
 		"label": "留声机",
 		"short": "留声",
 		"description": "放置后再次靠近启动，延迟播放10秒撞击声。",
 		"color": Color("#d49a5b"),
+		"price": 3,
 	},
 	"teleporter": {
 		"label": "传送器",
 		"short": "传送",
 		"description": "仅盗贼可用；轰鸣5秒后携带全部藏品撤离。",
 		"color": Color("#68c8ff"),
+		"price": 8,
 	},
 	"spring_glove": {
 		"label": "弹簧拳套",
 		"short": "拳套",
 		"description": "击退相邻敌人并使其眩晕1秒，一次性使用。",
 		"color": Color("#f1c65a"),
+		"price": 4,
 	},
 }
 
-const TOOL_SPAWN_COUNTS := {
-	"detector": 2,
-	"alarm": 2,
-	"trap": 2,
-	"adrenaline": 2,
-	"decoy": 2,
-	"phonograph": 2,
-	"teleporter": 1,
-	"spring_glove": 2,
+const SHOP_TOOL_TYPES := [
+	"adrenaline",
+	"alarm",
+	"trap",
+	"decoy",
+	"phonograph",
+	"spring_glove",
+	"detector",
+	"teleporter",
+]
+
+const SOUND_PATHS := {
+	"walk": "res://GJGamejam素材/music/walksound.mp3",
+	"furniture_hit": "res://GJGamejam素材/music/woodsmashsound.mp3",
+	"furniture_open": "res://GJGamejam素材/music/openboxsound.mp3",
+	"attack": "res://GJGamejam素材/music/swordslashsound.mp3",
+	"scream": "res://GJGamejam素材/music/malehorrorscream.mp3",
+	"monster_win": "res://GJGamejam素材/music/witchlaugh.mp3",
 }
 
 var rng := RandomNumberGenerator.new()
@@ -173,6 +193,22 @@ var trapped_by := {"monster": "", "thief": ""}
 var trap_escape_progress := {"monster": 0, "thief": 0}
 var trap_expected_left := {"monster": true, "thief": true}
 var next_device_id := 0
+var current_round := 1
+var player_coins := {"A": 0, "B": 0}
+var player_stashes := {"A": [], "B": []}
+var player_loadouts := {"A": [], "B": []}
+var shop_selected := {"A": 0, "B": 0}
+var shop_ready := {"A": false, "B": false}
+var round_awards := {"A": 0, "B": 0}
+var match_totals := {"A": 0, "B": 0}
+var sound_streams: Dictionary = {}
+var sound_last_played: Dictionary = {}
+var walk_players: Dictionary = {}
+var sound_players: Dictionary = {}
+var gm_console_open := false
+var gm_command := ""
+var gm_output := "输入 help 查看命令。"
+var gm_history: Array[String] = []
 
 var font: Font
 var world_25d: World25D
@@ -181,6 +217,8 @@ var world_25d: World25D
 func _ready() -> void:
 	rng.randomize()
 	font = ThemeDB.fallback_font
+	_load_sound_streams()
+	_setup_walk_players()
 	world_25d = WORLD_25D_SCRIPT.new()
 	world_25d.name = "World25DRenderer"
 	add_child(world_25d)
@@ -192,6 +230,23 @@ func _ready() -> void:
 
 
 func new_game() -> void:
+	current_round = 1
+	player_coins = {"A": 0, "B": 0}
+	player_stashes = {"A": [], "B": []}
+	player_loadouts = {"A": [], "B": []}
+	shop_selected = {"A": 0, "B": 0}
+	shop_ready = {"A": false, "B": false}
+	round_awards = {"A": 0, "B": 0}
+	match_totals = {"A": 0, "B": 0}
+	next_device_id = 0
+	gm_console_open = false
+	gm_command = ""
+	gm_output = "输入 help 查看命令。"
+	gm_history.clear()
+	_start_round()
+
+
+func _start_round() -> void:
 	rooms = _generate_rooms()
 	monster = _make_actor(MONSTER_SPAWN_ROOM, MONSTER_SPAWN_POS, "left")
 	thief = _make_actor(ENTRANCE_ROOM, ENTRANCE_POS, "right")
@@ -217,7 +272,10 @@ func new_game() -> void:
 	result_restart_rect = Rect2()
 	help_open = {"monster": false, "thief": false}
 	help_rects = {"monster": Rect2(), "thief": Rect2()}
-	tool_inventories = {"monster": [], "thief": []}
+	tool_inventories = {
+		"monster": _take_loadout_for_round(_player_for_role("monster")),
+		"thief": _take_loadout_for_round(_player_for_role("thief")),
+	}
 	tool_selected = {"monster": 0, "thief": 0}
 	status_effects = {
 		"monster": _fresh_status_effects(),
@@ -226,15 +284,54 @@ func new_game() -> void:
 	trapped_by = {"monster": "", "thief": ""}
 	trap_escape_progress = {"monster": 0, "thief": 0}
 	trap_expected_left = {"monster": true, "thief": true}
-	next_device_id = 0
 	restart_rect = Rect2()
 	early_rect = Rect2()
-	logs = ["藏宝阶段开始：怪物持有 3 件藏品。"]
+	result_restart_rect = Rect2()
+	round_awards = {"A": 0, "B": 0}
+	logs = [
+		"第 %d / %d 局：玩家%s担任怪物，玩家%s担任盗贼。"
+		% [current_round, MATCH_ROUNDS, _player_for_role("monster"), _player_for_role("thief")]
+	]
 	if world_25d:
 		world_25d.rebuild(rooms)
 		world_25d.sync(rooms, monster, thief, afterimages, dragging, false, elapsed)
 		world_25d.reset_physics_interpolation()
 	queue_redraw()
+
+
+func _player_for_role(role: String) -> String:
+	# Existing @tool scene instances can keep Nil for newly added members after
+	# a script hot reload. Coerce that transient editor value to round one so
+	# the inspector redraw does not emit the same error every frame.
+	var round_number := maxi(int(current_round), 1)
+	var player_a_is_monster := round_number % 2 == 1
+	if role == "monster":
+		return "A" if player_a_is_monster else "B"
+	return "B" if player_a_is_monster else "A"
+
+
+func _role_for_player(player: String) -> String:
+	return "monster" if _player_for_role("monster") == player else "thief"
+
+
+func _take_loadout_for_round(player: String) -> Array:
+	var carried: Array = []
+	var stash: Array = player_stashes[player]
+	var valid_loadout: Array = []
+	for item_id in player_loadouts[player]:
+		for index in range(stash.size()):
+			var tool: Dictionary = stash[index]
+			if str(tool.get("id", "")) != str(item_id):
+				continue
+			tool["active"] = false
+			carried.append(tool)
+			valid_loadout.append(str(item_id))
+			stash.remove_at(index)
+			break
+		if carried.size() >= TOOL_INVENTORY_CAPACITY:
+			break
+	player_loadouts[player] = valid_loadout
+	return carried
 
 
 func _make_actor(room: Vector2i, pos: Vector2, dir: String) -> Dictionary:
@@ -274,16 +371,17 @@ func _physics_process(delta: float) -> void:
 			stomach_clock += 15.0
 			_add_noise("thief", "肚子叫")
 			_push_log("盗贼的肚子叫了，怪物获得 2 秒方向提示。")
-	if phase != "ready" and phase != "ended":
+	if phase in ["hide", "hunt"]:
 		monster["moving"] = false
 		thief["moving"] = false
 		_handle_continuous_input(delta)
+	_update_walk_audio()
 	if world_25d:
 		world_25d.sync(rooms, monster, thief, afterimages, dragging, elapsed < attack_until, elapsed)
 
 
 func _update_phase(delta: float) -> void:
-	if phase != "hide" and phase != "ready":
+	if phase != "hide" and phase != "ready" and phase != "hunt":
 		return
 	phase_clock += delta
 	if phase_clock < 1.0:
@@ -296,8 +394,10 @@ func _update_phase(delta: float) -> void:
 			continue
 		if phase == "hide":
 			_begin_hunt_countdown()
-		else:
+		elif phase == "ready":
 			_enter_hunt()
+		else:
+			_end_round("盗贼未能在8分钟内撤离，怪物守住了老宅。", false, true)
 		break
 
 
@@ -335,14 +435,28 @@ func _apply_view_relative_input(role: String, screen_input: Vector2, delta: floa
 func _input(event: InputEvent) -> void:
 	if Engine.is_editor_hint():
 		return
+	if event is InputEventKey and event.pressed and not event.echo and _is_gm_console_toggle(event):
+		gm_console_open = not bool(gm_console_open)
+		gm_command = ""
+		get_viewport().set_input_as_handled()
+		queue_redraw()
+		return
+	if bool(gm_console_open):
+		if event is InputEventKey and event.pressed:
+			_handle_gm_console_key(event)
+		get_viewport().set_input_as_handled()
+		return
 	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT and event.pressed:
 		for role in ["monster", "thief"]:
 			if (help_rects[role] as Rect2).has_point(event.position):
 				help_open[role] = not bool(help_open[role])
 				get_viewport().set_input_as_handled()
 				return
-		if restart_rect.has_point(event.position) or result_restart_rect.has_point(event.position):
+		if restart_rect.has_point(event.position):
 			new_game()
+			return
+		if result_restart_rect.has_point(event.position):
+			_advance_from_result()
 			return
 		if phase == "hide" and early_rect.has_point(event.position):
 			_begin_hunt_countdown()
@@ -353,6 +467,9 @@ func _input(event: InputEvent) -> void:
 	var physical: Key = event.physical_keycode
 	if key == KEY_F2:
 		new_game()
+		return
+	if phase == "shop":
+		_handle_shop_input(key, physical)
 		return
 	if key == KEY_F1:
 		help_open["monster"] = not bool(help_open["monster"])
@@ -415,6 +532,177 @@ func _input(event: InputEvent) -> void:
 	elif key == KEY_KP_9:
 		if world_25d:
 			world_25d.rotate_camera("thief", 1)
+
+
+func _is_gm_console_toggle(event: InputEventKey) -> bool:
+	return (
+		event.physical_keycode == KEY_QUOTELEFT
+		or event.keycode == KEY_QUOTELEFT
+		or event.keycode == KEY_ASCIITILDE
+		or event.unicode == 96
+		or event.unicode == 126
+	)
+
+
+func _handle_gm_console_key(event: InputEventKey) -> void:
+	if event.keycode == KEY_ESCAPE:
+		gm_console_open = false
+		gm_command = ""
+		return
+	if event.keycode == KEY_ENTER or event.keycode == KEY_KP_ENTER:
+		var command := str(gm_command).strip_edges()
+		gm_command = ""
+		if command != "":
+			_execute_gm_command(command)
+		return
+	if event.keycode == KEY_BACKSPACE:
+		var text := str(gm_command)
+		if not text.is_empty():
+			gm_command = text.left(text.length() - 1)
+		return
+	if event.unicode >= 32 and event.unicode != 96 and event.unicode != 126:
+		gm_command = str(gm_command) + String.chr(event.unicode)
+
+
+func _handle_shop_input(key: Key, physical: Key) -> void:
+	var player := ""
+	var action := ""
+	if physical == KEY_W:
+		player = "A"
+		action = "previous"
+	elif physical == KEY_S:
+		player = "A"
+		action = "next"
+	elif physical == KEY_R:
+		player = "A"
+		action = "buy"
+	elif physical == KEY_F:
+		player = "A"
+		action = "equip"
+	elif physical == KEY_H:
+		player = "A"
+		action = "ready"
+	elif key == KEY_UP:
+		player = "B"
+		action = "previous"
+	elif key == KEY_DOWN:
+		player = "B"
+		action = "next"
+	elif key == KEY_KP_1:
+		player = "B"
+		action = "buy"
+	elif key == KEY_KP_3:
+		player = "B"
+		action = "equip"
+	elif key == KEY_KP_5:
+		player = "B"
+		action = "ready"
+	if player == "":
+		return
+	if action == "previous":
+		shop_selected[player] = posmod(int(shop_selected[player]) - 1, SHOP_TOOL_TYPES.size())
+		shop_ready[player] = false
+	elif action == "next":
+		shop_selected[player] = posmod(int(shop_selected[player]) + 1, SHOP_TOOL_TYPES.size())
+		shop_ready[player] = false
+	elif action == "buy":
+		_buy_selected_shop_tool(player)
+	elif action == "equip":
+		_toggle_selected_shop_tool(player)
+	else:
+		shop_ready[player] = not bool(shop_ready[player])
+	if bool(shop_ready["A"]) and bool(shop_ready["B"]):
+		current_round += 1
+		_start_round()
+
+
+func _execute_gm_command(command_line: String) -> void:
+	gm_history.push_front("> " + command_line)
+	if gm_history.size() > 4:
+		gm_history.resize(4)
+	var parts := command_line.split(" ", false)
+	if parts.is_empty():
+		return
+	var command := str(parts[0]).to_lower()
+	match command:
+		"next":
+			_gm_next_stage()
+		"help":
+			gm_output = "next 下一阶段｜gold A 50 加金币｜give A adrenaline 发道具｜~ / Esc 关闭"
+		"gold":
+			if parts.size() != 3 or str(parts[1]).to_upper() not in ["A", "B"] or not str(parts[2]).is_valid_int():
+				gm_output = "用法：gold A 50"
+				return
+			var player := str(parts[1]).to_upper()
+			var amount := int(parts[2])
+			player_coins[player] = maxi(int(player_coins.get(player, 0)) + amount, 0)
+			gm_output = "玩家%s金币已调整为 %d。" % [player, player_coins[player]]
+		"give":
+			if parts.size() != 3:
+				gm_output = "用法：give A adrenaline"
+				return
+			_gm_give_tool(str(parts[1]).to_upper(), str(parts[2]).to_lower())
+		_:
+			gm_output = "未知命令：%s。输入 help 查看命令。" % command
+
+
+func _gm_next_stage() -> void:
+	match phase:
+		"hide":
+			_begin_hunt_countdown()
+			_enter_hunt()
+			gm_output = "已跳过藏宝倒计时，进入第%d局追杀阶段。" % current_round
+		"ready":
+			_enter_hunt()
+			gm_output = "已跳过准备倒计时，进入第%d局追杀阶段。" % current_round
+		"hunt":
+			_end_round("GM结束了本局，盗贼财物未撤离。", false, true)
+			if current_round < MATCH_ROUNDS:
+				_advance_from_result()
+				gm_output = "第%d局已结束，进入局间商店。" % current_round
+			else:
+				gm_output = "第四局已结束，进入最终结算。"
+		"ended":
+			if current_round >= MATCH_ROUNDS:
+				gm_output = "四局比赛已经结束。"
+			else:
+				_advance_from_result()
+				gm_output = "已进入第%d局后的局间商店。" % current_round
+		"shop":
+			if current_round >= MATCH_ROUNDS:
+				gm_output = "四局比赛已经结束。"
+				return
+			current_round += 1
+			_start_round()
+			gm_output = "已进入第%d局藏宝阶段。" % current_round
+		_:
+			gm_output = "当前阶段无法使用 next。"
+
+
+func _gm_give_tool(player: String, tool_type: String) -> void:
+	if player not in ["A", "B"]:
+		gm_output = "玩家只能填写 A 或 B。"
+		return
+	if not TOOL_DEFS.has(tool_type):
+		gm_output = "无效道具。可用：%s" % "、".join(SHOP_TOOL_TYPES)
+		return
+	var id := "gm-%s-%d" % [player, next_device_id]
+	next_device_id += 1
+	var tool := _make_tool_instance(tool_type, id)
+	if phase in ["hide", "ready", "hunt"]:
+		var role := _role_for_player(player)
+		var inventory: Array = tool_inventories[role]
+		if inventory.size() >= TOOL_INVENTORY_CAPACITY:
+			gm_output = "玩家%s当前道具栏已满。" % player
+			return
+		inventory.append(tool)
+		tool_selected[role] = inventory.size() - 1
+		gm_output = "已将%s放入玩家%s当前道具栏。" % [TOOL_DEFS[tool_type]["label"], player]
+		return
+	(player_stashes[player] as Array).append(tool)
+	if (player_loadouts[player] as Array).size() < TOOL_INVENTORY_CAPACITY:
+		(player_loadouts[player] as Array).append(id)
+	gm_output = "已将%s放入玩家%s仓库。" % [TOOL_DEFS[tool_type]["label"], player]
 
 
 func _help_blocks_key(key: Key, physical: Key) -> bool:
@@ -533,6 +821,7 @@ func _generate_rooms() -> Array:
 					"label": TRINKETS[rng.randi_range(0, TRINKETS.size() - 1)],
 					"value": 1,
 				})
+			var base_durability := _furniture_durability(kind)
 			room["furniture"].append({
 				"id": "f-%d-%d-%d" % [room["coord"].x, room["coord"].y, index],
 				"kind": kind,
@@ -541,7 +830,8 @@ func _generate_rooms() -> Array:
 				"opened": false,
 				"destroyed": false,
 				"damage": 0,
-				"durability": _furniture_durability(kind),
+				"base_durability": base_durability,
+				"durability": base_durability + _contents_treasure_value(contents),
 				"contents": contents,
 				"last_hit_time": -10.0,
 			})
@@ -564,34 +854,14 @@ func _generate_rooms() -> Array:
 		for furniture in room["furniture"]:
 			hidden_furniture.append(furniture)
 	_shuffle_with_rng(hidden_furniture)
-	var hidden_tool_count := int(round(float(_total_tool_spawn_count()) * HIDDEN_TOOL_RATIO))
-	var generated_tools: Array = []
-	var tool_index := 0
-	for tool_type in TOOL_SPAWN_COUNTS:
-		for _copy in range(int(TOOL_SPAWN_COUNTS[tool_type])):
-			generated_tools.append(_make_tool_instance(str(tool_type), "tool-%d" % tool_index))
-			tool_index += 1
-	_shuffle_with_rng(generated_tools)
-	var hidden_index := 0
-	for index in range(generated_tools.size()):
-		var tool_item: Dictionary = generated_tools[index]
-		if index < hidden_tool_count and hidden_index < hidden_furniture.size():
-			(hidden_furniture[hidden_index] as Dictionary)["contents"].append(tool_item)
-			hidden_index += 1
-		else:
-			var room := _random_room_for_visible_item(generated, visible_room_keys)
-			tool_item["pos"] = _empty_position(room)
-			tool_item["collected"] = false
-			room["items"].append(tool_item)
-			visible_room_keys[_room_key_for_distribution(room["coord"])] = room["coord"]
+	for index in range(mini(HIDDEN_ADRENALINE_COUNT, hidden_furniture.size())):
+		var adrenaline := _make_tool_instance("adrenaline", "round-%d-adrenaline-%d" % [current_round, index])
+		(hidden_furniture[index] as Dictionary)["contents"].append(adrenaline)
 	return generated
 
 
 func _total_tool_spawn_count() -> int:
-	var total := 0
-	for count in TOOL_SPAWN_COUNTS.values():
-		total += int(count)
-	return total
+	return HIDDEN_ADRENALINE_COUNT
 
 
 func _room_key_for_distribution(coord: Vector2i) -> String:
@@ -635,6 +905,25 @@ func _furniture_durability(kind: String) -> int:
 		"木桶": return 2
 		"木箱": return 3
 		_: return 4
+
+
+func _contents_treasure_value(contents: Array) -> int:
+	var bonus := 0
+	for content in contents:
+		if str(content.get("kind", "")) in ["treasure", "trinket"]:
+			bonus += int(content.get("value", 0))
+	return bonus
+
+
+func _effective_furniture_durability(furniture: Dictionary) -> int:
+	if not furniture.has("base_durability"):
+		return int(furniture.get("durability", 1))
+	var base := int(furniture["base_durability"])
+	return base + _contents_treasure_value(furniture.get("contents", []))
+
+
+func _refresh_furniture_durability(furniture: Dictionary) -> void:
+	furniture["durability"] = _effective_furniture_durability(furniture)
 
 
 func _empty_position(room: Dictionary, reserved: Array = []) -> Vector2:
@@ -690,6 +979,115 @@ func _make_tool_instance(tool_type: String, id: String) -> Dictionary:
 		result["active"] = false
 		result["next_noise"] = 0.0
 	return result
+
+
+func _selected_shop_tool_type(player: String) -> String:
+	return str(SHOP_TOOL_TYPES[clampi(int(shop_selected[player]), 0, SHOP_TOOL_TYPES.size() - 1)])
+
+
+func _buy_selected_shop_tool(player: String) -> void:
+	var tool_type := _selected_shop_tool_type(player)
+	var price := int(TOOL_DEFS[tool_type]["price"])
+	if int(player_coins[player]) < price:
+		_push_log("玩家%s金币不足，无法购买%s。" % [player, TOOL_DEFS[tool_type]["label"]])
+		return
+	player_coins[player] = int(player_coins[player]) - price
+	var id := "shop-%s-%d" % [player, next_device_id]
+	next_device_id += 1
+	var tool := _make_tool_instance(tool_type, id)
+	(player_stashes[player] as Array).append(tool)
+	if (player_loadouts[player] as Array).size() < TOOL_INVENTORY_CAPACITY:
+		(player_loadouts[player] as Array).append(id)
+	_push_log("玩家%s购买了%s。" % [player, TOOL_DEFS[tool_type]["label"]])
+	shop_ready[player] = false
+
+
+func _toggle_selected_shop_tool(player: String) -> void:
+	var tool_type := _selected_shop_tool_type(player)
+	var loadout: Array = player_loadouts[player]
+	var stash: Array = player_stashes[player]
+	for index in range(loadout.size()):
+		var equipped_id := str(loadout[index])
+		for tool in stash:
+			if str(tool.get("id", "")) == equipped_id and str(tool.get("tool_type", "")) == tool_type:
+				loadout.remove_at(index)
+				_push_log("玩家%s卸下了%s。" % [player, TOOL_DEFS[tool_type]["label"]])
+				shop_ready[player] = false
+				return
+	if loadout.size() >= TOOL_INVENTORY_CAPACITY:
+		_push_log("玩家%s的出战栏已满（最多3件）。" % player)
+		return
+	for tool in stash:
+		if str(tool.get("tool_type", "")) != tool_type or loadout.has(str(tool.get("id", ""))):
+			continue
+		loadout.append(str(tool["id"]))
+		_push_log("玩家%s装备了%s。" % [player, TOOL_DEFS[tool_type]["label"]])
+		shop_ready[player] = false
+		return
+	_push_log("玩家%s仓库中没有%s，请先购买。" % [player, TOOL_DEFS[tool_type]["label"]])
+
+
+func _return_round_tools_to_stashes() -> void:
+	for role in ["monster", "thief"]:
+		var player := _player_for_role(role)
+		for tool in tool_inventories[role]:
+			tool["active"] = false
+			(player_stashes[player] as Array).append(tool)
+		tool_inventories[role] = []
+	for player in ["A", "B"]:
+		var available_ids: Dictionary = {}
+		for tool in player_stashes[player]:
+			available_ids[str(tool.get("id", ""))] = true
+		var valid: Array = []
+		for id in player_loadouts[player]:
+			if available_ids.has(str(id)) and valid.size() < TOOL_INVENTORY_CAPACITY:
+				valid.append(str(id))
+		player_loadouts[player] = valid
+
+
+func _monster_treasure_value() -> int:
+	var total := 0
+	for treasure in TREASURES:
+		total += int(treasure["value"])
+	return total
+
+
+func _end_round(reason: String, thief_escaped: bool, monster_victory := false) -> void:
+	if phase == "ended" or phase == "shop" or phase == "match_ended":
+		return
+	has_extracted = thief_escaped
+	extracted_value = loot_value if thief_escaped else 0
+	var monster_player := _player_for_role("monster")
+	var thief_player := _player_for_role("thief")
+	var monster_coins := _monster_treasure_value() * COINS_PER_LOOT_VALUE
+	var thief_coins := extracted_value * COINS_PER_LOOT_VALUE
+	round_awards = {"A": 0, "B": 0}
+	round_awards[monster_player] = monster_coins
+	round_awards[thief_player] = thief_coins
+	for player in ["A", "B"]:
+		player_coins[player] = int(player_coins[player]) + int(round_awards[player])
+		match_totals[player] = int(match_totals[player]) + int(round_awards[player])
+	_return_round_tools_to_stashes()
+	phase = "ended"
+	outcome = (
+		"%s\n玩家%s（怪物）获得 %d 金币；玩家%s（盗贼）获得 %d 金币。"
+		% [reason, monster_player, monster_coins, thief_player, thief_coins]
+	)
+	if monster_victory:
+		_play_sound("monster_win", -8.0, 0.5)
+
+
+func _advance_from_result() -> void:
+	if phase != "ended":
+		return
+	if current_round >= MATCH_ROUNDS:
+		new_game()
+		return
+	phase = "shop"
+	shop_ready = {"A": false, "B": false}
+	shop_selected = {"A": 0, "B": 0}
+	logs = ["局间商店开启：购买后可装备至多3件道具。"]
+	result_restart_rect = Rect2()
 
 
 func _push_log(message: String) -> void:
@@ -794,6 +1192,69 @@ func _play_global_noise(label: String, event_duration: float) -> void:
 	player.play()
 
 
+func _load_sound_streams() -> void:
+	sound_streams.clear()
+	for sound_name in SOUND_PATHS:
+		var path := str(SOUND_PATHS[sound_name])
+		if not ResourceLoader.exists(path):
+			continue
+		var stream := ResourceLoader.load(path) as AudioStream
+		if stream:
+			sound_streams[sound_name] = stream
+
+
+func _setup_walk_players() -> void:
+	walk_players.clear()
+	if not sound_streams.has("walk"):
+		return
+	for role in ["monster", "thief"]:
+		var player := AudioStreamPlayer.new()
+		var stream := sound_streams["walk"].duplicate() as AudioStream
+		if stream is AudioStreamMP3:
+			stream.loop = true
+		player.stream = stream
+		player.volume_db = -18.0
+		add_child(player)
+		walk_players[role] = player
+
+
+func _update_walk_audio() -> void:
+	for role in ["monster", "thief"]:
+		if not walk_players.has(role):
+			continue
+		var player := walk_players[role] as AudioStreamPlayer
+		var actor := _get_actor(role)
+		var should_play := phase in ["hide", "hunt"] and bool(actor.get("moving", false))
+		if should_play and not player.playing:
+			player.play()
+		elif not should_play and player.playing:
+			player.stop()
+
+
+func _play_sound(sound_name: String, volume_db := -10.0, throttle := 0.0) -> void:
+	if not is_inside_tree() or not sound_streams.has(sound_name):
+		return
+	var now := Time.get_ticks_msec() / 1000.0
+	if throttle > 0.0 and now - float(sound_last_played.get(sound_name, -100.0)) < throttle:
+		return
+	sound_last_played[sound_name] = now
+	var existing: AudioStreamPlayer = sound_players.get(sound_name) as AudioStreamPlayer
+	if is_instance_valid(existing):
+		existing.stop()
+		existing.queue_free()
+	var player := AudioStreamPlayer.new()
+	player.stream = sound_streams[sound_name]
+	player.volume_db = volume_db
+	add_child(player)
+	sound_players[sound_name] = player
+	player.finished.connect(func():
+		if sound_players.get(sound_name) == player:
+			sound_players.erase(sound_name)
+		player.queue_free()
+	)
+	player.play()
+
+
 func _reveal_thief(actor_override: Dictionary = {}) -> void:
 	if phase != "hunt" or elapsed - last_afterimage_at < 0.5:
 		return
@@ -842,9 +1303,10 @@ func _enter_hunt() -> void:
 			var furniture := _random_intact_furniture()
 			if not furniture.is_empty():
 				furniture["contents"].append((treasure as Dictionary).duplicate(true))
+				_refresh_furniture_durability(furniture)
 			unplaced += 1
 	phase = "hunt"
-	seconds_left = 0
+	seconds_left = HUNT_SECONDS
 	monster = _make_actor(MONSTER_SPAWN_ROOM, MONSTER_SPAWN_POS, "left")
 	thief = _make_actor(ENTRANCE_ROOM, ENTRANCE_POS, "right")
 	dragging = {"monster": "", "thief": ""}
@@ -1143,6 +1605,7 @@ func _apply_furniture_hit(role: String, action: Dictionary) -> void:
 	var furniture := _find_furniture(room, str(action["furniture_id"]))
 	if furniture.is_empty() or bool(furniture["destroyed"]):
 		return
+	_refresh_furniture_durability(furniture)
 	room["traces"].append({
 		"pos": furniture["pos"],
 		"role": role,
@@ -1152,9 +1615,11 @@ func _apply_furniture_hit(role: String, action: Dictionary) -> void:
 	if role == "thief":
 		_reveal_thief()
 	furniture["last_hit_time"] = elapsed
+	_play_sound("furniture_hit", -9.0, 0.08)
 	if role == "monster":
 		var was_open := bool(furniture["opened"])
 		furniture["opened"] = true
+		_play_sound("furniture_open", -10.0, 0.12)
 		_trigger_furniture_alarm(room_coord, furniture)
 		if phase == "hide":
 			active_storage_id = str(furniture["id"])
@@ -1177,6 +1642,7 @@ func _apply_furniture_hit(role: String, action: Dictionary) -> void:
 			furniture["damage"] = durability
 			furniture["destroyed"] = true
 			furniture["opened"] = true
+			_play_sound("furniture_open", -8.0, 0.12)
 			_trigger_furniture_alarm(room_coord, furniture)
 			var released := _release_furniture_contents(room, furniture)
 			_push_log("盗贼撞毁了%s，掉出 %d 件物品。" % [furniture["kind"], released])
@@ -1355,6 +1821,7 @@ func _place_treasure() -> void:
 		var content: Dictionary = contents[index]
 		if content["id"] == treasure["id"]:
 			contents.remove_at(index)
+			_refresh_furniture_durability(furniture)
 			_push_log("已从%s取出%s。" % [furniture["kind"], treasure["label"]])
 			return
 	if _furniture_has_primary_content(furniture):
@@ -1371,6 +1838,7 @@ func _place_treasure() -> void:
 				_push_log("%s已在房间中。" % treasure["label"])
 				return
 	contents.append(treasure.duplicate(true))
+	_refresh_furniture_durability(furniture)
 	var room := _room_at(monster["room"])
 	room["traces"].append({"pos": monster["pos"], "role": "monster", "kind": "interact"})
 	_push_log("已将%s存入%s（价值 %d）。" % [treasure["label"], furniture["kind"], treasure["value"]])
@@ -1901,13 +2369,11 @@ func _thief_exit() -> void:
 func _complete_extraction(method: String) -> void:
 	if has_extracted:
 		return
-	has_extracted = true
-	extracted_value = loot_value
-	phase = "ended"
-	if extracted_value >= 5:
-		outcome = "盗贼通过%s完成本局唯一一次撤离，带出价值 %d 的财物。" % [method, extracted_value]
-	else:
-		outcome = "盗贼通过%s撤离，但带出价值只有 %d，行动失败。" % [method, extracted_value]
+	_end_round(
+		"盗贼通过%s完成本局唯一一次撤离，带出价值 %d 的财物。" % [method, loot_value],
+		true,
+		false,
+	)
 
 
 func _use_pill() -> void:
@@ -1924,6 +2390,7 @@ func _attack() -> void:
 	if phase != "hunt" or elapsed < attack_until or not _role_can_act("monster"):
 		return
 	attack_until = elapsed + 0.7
+	_play_sound("attack", -7.0, 0.18)
 	_add_noise("monster", "挥砍")
 	var same_room: bool = monster["room"] == thief["room"]
 	var vector: Vector2 = thief["pos"] - monster["pos"]
@@ -1935,8 +2402,8 @@ func _attack() -> void:
 		_cancel_teleporter("thief", "受到怪物攻击")
 		_reveal_thief()
 		if thief["hp"] <= 0:
-			phase = "ended"
-			outcome = "怪物砍倒了盗贼，守住了老宅。"
+			_play_sound("scream", -4.0, 0.2)
+			_end_round("怪物砍倒了盗贼，守住了老宅。", false, true)
 		else:
 			_push_log("挥砍命中！盗贼失去 1 滴血。")
 	else:
@@ -1962,8 +2429,12 @@ func _draw() -> void:
 	_draw_room_panel(layout["thief_panel"], layout["thief_room"], "thief")
 	if phase == "ready":
 		_draw_countdown_overlay(size)
+	elif phase == "shop":
+		_draw_shop_overlay(size)
 	elif phase == "ended":
 		_draw_result_overlay(size)
+	if bool(gm_console_open):
+		_draw_gm_console(size)
 
 
 func _calculate_layout(size: Vector2) -> Dictionary:
@@ -2003,6 +2474,31 @@ func _draw_button(rect: Rect2, label: String, secondary := false) -> void:
 	_text_center(label, rect, 12, color)
 
 
+func _draw_gm_console(size: Vector2) -> void:
+	var width := minf(size.x - 40.0, 1040.0)
+	var card := Rect2(
+		Vector2((size.x - width) * 0.5, size.y - 178.0),
+		Vector2(width, 158.0),
+	)
+	draw_rect(card, Color(0.015, 0.018, 0.015, 0.98))
+	draw_rect(card, Color("#86e36f"), false, 2.0)
+	draw_rect(Rect2(card.position, Vector2(card.size.x, 31.0)), Color("#172018"))
+	_text("GM CONSOLE", card.position + Vector2(12, 21), 12, Color("#86e36f"))
+	_text_right("~ / Esc 关闭", card.position + Vector2(card.size.x - 12, 21), 10, MUTED_COLOR)
+	_text(str(gm_output), card.position + Vector2(14, 55), 11, TEXT_COLOR)
+	var history_y := card.position.y + 78.0
+	for index in range(mini(gm_history.size(), 2) - 1, -1, -1):
+		_text(str(gm_history[index]), Vector2(card.position.x + 14, history_y), 9, MUTED_COLOR)
+		history_y += 17.0
+	var input_rect := Rect2(
+		Vector2(card.position.x + 12, card.end.y - 38),
+		Vector2(card.size.x - 24, 27),
+	)
+	draw_rect(input_rect, Color("#090b09"))
+	draw_rect(input_rect, Color("#456d43"), false, 1.0)
+	_text("> " + str(gm_command) + "▌", input_rect.position + Vector2(8, 19), 12, Color("#b8f0ae"))
+
+
 func _draw_room_panel(panel: Rect2, room_rect: Rect2, role: String) -> void:
 	var accent := MONSTER_COLOR if role == "monster" else THIEF_COLOR
 	var actor := _get_actor(role)
@@ -2010,7 +2506,12 @@ func _draw_room_panel(panel: Rect2, room_rect: Rect2, role: String) -> void:
 	draw_rect(panel, PANEL_COLOR)
 	draw_rect(panel, LINE_COLOR, false, 1)
 	draw_line(panel.position, Vector2(panel.end.x, panel.position.y), accent, 3)
-	_text("怪物视角" if role == "monster" else "盗贼视角", panel.position + Vector2(12, 20), 10, MUTED_COLOR)
+	_text(
+		"玩家%s · %s视角" % [_player_for_role(role), "怪物" if role == "monster" else "盗贼"],
+		panel.position + Vector2(12, 20),
+		10,
+		MUTED_COLOR,
+	)
 	_text("房间 %d-%d · %s" % [actor["room"].x + 1, actor["room"].y + 1, _phase_short_label()], panel.position + Vector2(12, 39), 14, TEXT_COLOR)
 	var help_rect := Rect2(Vector2(panel.end.x - 40, panel.position.y + 9), Vector2(28, 28))
 	help_rects[role] = help_rect
@@ -2137,7 +2638,8 @@ func _phase_short_label() -> String:
 	match phase:
 		"hide": return "藏宝 %d:%02d" % [seconds_left / 60, seconds_left % 60]
 		"ready": return "准备 %d" % seconds_left
-		"hunt": return "实时搜查"
+		"hunt": return "搜查 %d:%02d" % [seconds_left / 60, seconds_left % 60]
+		"shop": return "局间商店"
 		_: return "本局结束"
 
 
@@ -2166,15 +2668,16 @@ func _draw_help_overlay(room_rect: Rect2, role: String) -> void:
 	draw_rect(card, accent, false, 2.0)
 	_text_center("本局规则", Rect2(card.position + Vector2(0, 20), Vector2(card.size.x, 28)), 20, TEXT_COLOR)
 	var rules := (
-		"· 怪物一击打开家具；盗贼必须撞到耐久归零。\n\n"
-		+ "· 每件家具最多存一件正式藏品，并有 50% 概率藏有小玩意儿。\n\n"
-		+ "· 财物只有从入口撤离后才结算，每局只能撤离一次。\n\n"
-		+ "· 真实藏品不会自行晃动；探测器开启后才按价值显示信号。\n\n"
-		+ "· 每人最多携带3件道具；部分道具藏在家具内部。\n\n"
-		+ "· 警报器只能靠近完好家具安装；全图噪音会暴露方向。\n\n"
+		"· 怪物一击打开家具；盗贼所需撞击数 = 家具耐久 + 内部财物价值。\n"
+		+ "· 场上只生成地面药丸与家具内肾上腺素；其他道具只能在局间商店购买。\n"
+		+ "· 每场共4局，A/B轮流担任怪物；搜查限时8分钟。\n"
+		+ "· 财物只有从入口撤离后才结算；1点价值折算5金币。\n"
+		+ "· 真实藏品不会自行晃动；探测器开启后才按价值显示信号。\n"
+		+ "· 每人最多装备3件道具；未使用道具会退回个人仓库并跨局继承。\n"
+		+ "· 警报器只能靠近完好家具安装；全图噪音会暴露方向。\n"
 		+ "· 捕兽夹需左右键严格交替20次挣脱；传送器轰鸣5秒后撤离。"
 	)
-	_multiline(rules, card.position + Vector2(34, 78), card.size.x - 68, 11, MUTED_COLOR, 19)
+	_multiline(rules, card.position + Vector2(34, 78), card.size.x - 68, 11, MUTED_COLOR, 22)
 	var controls := ""
 	if role == "monster":
 		controls = (
@@ -2188,7 +2691,7 @@ func _draw_help_overlay(room_rect: Rect2, role: String) -> void:
 			+ "Num4/6 选择道具　Num3 使用　Num5 撤离\n"
 			+ "Num7/9 转动视角　按住 Num8 地图　Num+ 帮助"
 		)
-	var controls_title_y := minf(card.position.y + 354.0, card.end.y - 132.0)
+	var controls_title_y := minf(card.position.y + 286.0, card.end.y - 132.0)
 	_text("完整键位", Vector2(card.position.x + 34, controls_title_y), 13, accent)
 	_multiline(
 		controls,
@@ -2510,16 +3013,162 @@ func _draw_countdown_overlay(size: Vector2) -> void:
 	_text_center("怪物与盗贼已回到起点，倒计时结束后正式开始。", Rect2(card.position + Vector2(0, 190), Vector2(card.size.x, 30)), 12, MUTED_COLOR)
 
 
+func _stash_tool_count(player: String, tool_type: String) -> int:
+	var count := 0
+	for tool in player_stashes[player]:
+		if str(tool.get("tool_type", "")) == tool_type:
+			count += 1
+	return count
+
+
+func _equipped_tool_count(player: String, tool_type: String) -> int:
+	var equipped_ids: Array = player_loadouts[player]
+	var count := 0
+	for tool in player_stashes[player]:
+		if str(tool.get("tool_type", "")) == tool_type and equipped_ids.has(str(tool.get("id", ""))):
+			count += 1
+	return count
+
+
+func _draw_shop_player_panel(rect: Rect2, player: String) -> void:
+	var accent := MONSTER_COLOR if player == "A" else THIEF_COLOR
+	draw_rect(rect, PANEL_COLOR)
+	draw_rect(rect, accent, false, 2.0)
+	var next_round := current_round + 1
+	var next_role := "怪物" if (
+		(player == "A" and next_round % 2 == 1)
+		or (player == "B" and next_round % 2 == 0)
+	) else "盗贼"
+	_text(
+		"玩家%s · %d金币 · 下一局：%s" % [player, player_coins[player], next_role],
+		rect.position + Vector2(18, 30),
+		18,
+		TEXT_COLOR,
+	)
+	_text(
+		"仓库 %d件 · 已装备 %d/3" % [
+			(player_stashes[player] as Array).size(),
+			(player_loadouts[player] as Array).size(),
+		],
+		rect.position + Vector2(18, 54),
+		10,
+		MUTED_COLOR,
+	)
+	var row_height := 43.0
+	var list_top := rect.position.y + 70.0
+	for index in range(SHOP_TOOL_TYPES.size()):
+		var tool_type := str(SHOP_TOOL_TYPES[index])
+		var definition: Dictionary = TOOL_DEFS[tool_type]
+		var row := Rect2(
+			Vector2(rect.position.x + 14, list_top + index * row_height),
+			Vector2(rect.size.x - 28, row_height - 4),
+		)
+		if index == int(shop_selected[player]):
+			draw_rect(row, Color(accent, 0.15))
+			draw_rect(row, accent, false, 1.5)
+		else:
+			draw_rect(row, PANEL_ALT)
+		var marker := "▶ " if index == int(shop_selected[player]) else "   "
+		_text(
+			"%s%s · %d金币" % [marker, definition["label"], definition["price"]],
+			row.position + Vector2(8, 17),
+			11,
+			TEXT_COLOR,
+		)
+		_text(
+			"仓库%d / 装备%d" % [
+				_stash_tool_count(player, tool_type),
+				_equipped_tool_count(player, tool_type),
+			],
+			row.position + Vector2(8, 33),
+			9,
+			MUTED_COLOR,
+		)
+	var selected_type := _selected_shop_tool_type(player)
+	var description_y := list_top + SHOP_TOOL_TYPES.size() * row_height + 8.0
+	_multiline(
+		str(TOOL_DEFS[selected_type]["description"]),
+		Vector2(rect.position.x + 18, description_y),
+		rect.size.x - 36,
+		10,
+		MUTED_COLOR,
+		17,
+	)
+	var controls := "W/S 选择 · R 购买 · F 装卸 · H 准备" if player == "A" else "↑/↓ 选择 · Num1 购买 · Num3 装卸 · Num5 准备"
+	_text_center(
+		controls,
+		Rect2(Vector2(rect.position.x, rect.end.y - 56), Vector2(rect.size.x, 22)),
+		10,
+		TEXT_COLOR,
+	)
+	var ready_text := "已准备，等待对方" if bool(shop_ready[player]) else "尚未准备"
+	_text_center(
+		ready_text,
+		Rect2(Vector2(rect.position.x, rect.end.y - 31), Vector2(rect.size.x, 20)),
+		11,
+		accent if bool(shop_ready[player]) else MUTED_COLOR,
+	)
+
+
+func _draw_shop_overlay(size: Vector2) -> void:
+	draw_rect(Rect2(Vector2.ZERO, size), Color(0.015, 0.018, 0.015, 0.92))
+	_text_center(
+		"第 %d 局结算完成 · 局间商店" % current_round,
+		Rect2(Vector2(0, 15), Vector2(size.x, 34)),
+		23,
+		TEXT_COLOR,
+	)
+	_text_center(
+		"购买的道具进入个人仓库；装备最多3件，未使用道具可继承到后续局。",
+		Rect2(Vector2(0, 48), Vector2(size.x, 24)),
+		11,
+		MUTED_COLOR,
+	)
+	var margin := 32.0
+	var gap := 18.0
+	var panel_width := (size.x - margin * 2.0 - gap) / 2.0
+	var panels_top := 82.0
+	var panel_height := size.y - panels_top - 24.0
+	_draw_shop_player_panel(Rect2(margin, panels_top, panel_width, panel_height), "A")
+	_draw_shop_player_panel(Rect2(margin + panel_width + gap, panels_top, panel_width, panel_height), "B")
+
+
 func _draw_result_overlay(size: Vector2) -> void:
 	draw_rect(Rect2(Vector2.ZERO, size), Color(0.015, 0.018, 0.015, 0.86))
-	var card := Rect2(size / 2.0 - Vector2(270, 155), Vector2(540, 310))
+	var card := Rect2(size / 2.0 - Vector2(320, 205), Vector2(640, 410))
 	draw_rect(card, PANEL_COLOR)
 	draw_rect(card, Color("#777d73"), false, 1)
-	_text_center("行动结算", Rect2(card.position + Vector2(0, 28), Vector2(card.size.x, 24)), 11, MUTED_COLOR)
-	_multiline(outcome, card.position + Vector2(45, 84), card.size.x - 90, 22, TEXT_COLOR, 32, HORIZONTAL_ALIGNMENT_CENTER)
-	_text_center("带出价值 %d · 剩余生命 %d" % [extracted_value, max(int(thief["hp"]), 0)], Rect2(card.position + Vector2(0, 185), Vector2(card.size.x, 25)), 12, MUTED_COLOR)
-	result_restart_rect = Rect2(card.position + Vector2(170, 235), Vector2(200, 42))
-	_draw_button(result_restart_rect, "生成新宅邸")
+	_text_center(
+		"第 %d / %d 局结算" % [current_round, MATCH_ROUNDS],
+		Rect2(card.position + Vector2(0, 28), Vector2(card.size.x, 24)),
+		13,
+		MUTED_COLOR,
+	)
+	_multiline(outcome, card.position + Vector2(48, 82), card.size.x - 96, 18, TEXT_COLOR, 31, HORIZONTAL_ALIGNMENT_CENTER)
+	_text_center(
+		"当前金币　A：%d　B：%d" % [player_coins["A"], player_coins["B"]],
+		Rect2(card.position + Vector2(0, 205), Vector2(card.size.x, 25)),
+		14,
+		GOLD_COLOR,
+	)
+	_text_center(
+		"四局累计收入　A：%d　B：%d" % [match_totals["A"], match_totals["B"]],
+		Rect2(card.position + Vector2(0, 239), Vector2(card.size.x, 25)),
+		12,
+		MUTED_COLOR,
+	)
+	if current_round >= MATCH_ROUNDS:
+		var winner := "平局"
+		if int(match_totals["A"]) != int(match_totals["B"]):
+			winner = "玩家A获胜" if int(match_totals["A"]) > int(match_totals["B"]) else "玩家B获胜"
+		_text_center(
+			"四局结束 · %s" % winner,
+			Rect2(card.position + Vector2(0, 280), Vector2(card.size.x, 28)),
+			20,
+			TEXT_COLOR,
+		)
+	result_restart_rect = Rect2(card.position + Vector2(200, 336), Vector2(240, 46))
+	_draw_button(result_restart_rect, "开始新比赛" if current_round >= MATCH_ROUNDS else "进入局间商店")
 
 
 func _text(text: String, pos: Vector2, size: int, color: Color) -> void:

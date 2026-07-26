@@ -16,7 +16,6 @@ func _initialize() -> void:
 	var tool_count := 0
 	var visible_tool_count := 0
 	var hidden_tool_count := 0
-	var visible_tool_rooms: Dictionary = {}
 	var visible_pickup_coords: Array[Vector2i] = []
 	for room in game.rooms:
 		var room_has_visible_pickup := false
@@ -28,19 +27,17 @@ func _initialize() -> void:
 			if str(item.get("kind", "")) == "tool":
 				tool_count += 1
 				visible_tool_count += 1
-				var room_key := str(room["coord"])
-				assert(not visible_tool_rooms.has(room_key))
-				visible_tool_rooms[room_key] = true
 		for furniture in room["furniture"]:
 			for content in furniture["contents"]:
 				if str(content.get("kind", "")) == "tool":
+					assert(str(content.get("tool_type", "")) == "adrenaline")
 					tool_count += 1
 					hidden_tool_count += 1
 	assert(tool_count == game._total_tool_spawn_count())
-	assert(tool_count == 15)
-	assert(visible_tool_count == 7)
-	assert(hidden_tool_count == 8)
-	assert(visible_pickup_coords.size() == 10)
+	assert(tool_count == game.HIDDEN_ADRENALINE_COUNT)
+	assert(visible_tool_count == 0)
+	assert(hidden_tool_count == game.HIDDEN_ADRENALINE_COUNT)
+	assert(visible_pickup_coords.size() == game.PILL_SPAWN_COUNT)
 	for first in range(visible_pickup_coords.size()):
 		for second in range(first + 1, visible_pickup_coords.size()):
 			var delta: Vector2i = visible_pickup_coords[first] - visible_pickup_coords[second]
@@ -60,6 +57,7 @@ func _initialize() -> void:
 		"opened": false,
 		"destroyed": false,
 		"damage": 0,
+		"base_durability": 3,
 		"durability": 3,
 		"contents": [{"id": "treasure-test", "kind": "treasure", "label": "测试藏品", "value": 5}],
 		"last_hit_time": -10.0,
