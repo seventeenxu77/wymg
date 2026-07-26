@@ -762,11 +762,12 @@ func _item_visual_info(item: Dictionary) -> Dictionary:
 	var kind := str(item.get("kind", ""))
 	if kind == "pill":
 		return {"path": "res://assets/25d/pill.svg", "pixel_size": 0.0048}
-	if kind == "treasure" or kind == "trinket":
-		return {
-			"path": "res://GJGamejam素材/2.5D物品/红宝石.png",
-			"pixel_size": 0.0084 if kind == "trinket" else 0.01006,
-		}
+	if kind == "treasure":
+		if int(item.get("value", 0)) <= 1:
+			return {"path": "res://GJGamejam素材/2.5D物品/copper_coin.png", "pixel_size": 0.0075}
+		return {"path": "res://GJGamejam素材/2.5D物品/红宝石.png", "pixel_size": 0.01006}
+	if kind == "trinket":
+		return {"path": "res://GJGamejam素材/2.5D物品/红宝石.png", "pixel_size": 0.0084}
 	var tool_type := str(item.get("tool_type", item.get("device_type", "")))
 	match tool_type:
 		"trap":
@@ -780,17 +781,17 @@ func _item_visual_info(item: Dictionary) -> Dictionary:
 				"pixel_size": 0.00262 if character_role == "monster" else 0.00270,
 			}
 		"alarm":
-			return {"path": "res://GJGamejam素材/2.5D物品/白蜡烛燃烧.png", "pixel_size": 0.0062}
+			return {"path": "res://GJGamejam素材/2.5D物品/s2_alarm_clean.png", "pixel_size": 0.0062}
 		"phonograph":
-			return {"path": "res://GJGamejam素材/2.5D物品/r3_chest_clean.png", "pixel_size": 0.0105}
+			return {"path": "res://GJGamejam素材/2.5D物品/s2_gramo_clean.png", "pixel_size": 0.0105}
 		"teleporter":
 			return {"path": "res://GJGamejam素材/2.5D物品/红宝石.png", "pixel_size": 0.01006, "color": Color("#6ed5ff")}
 		"adrenaline":
-			return {"path": "res://assets/25d/pill.svg", "pixel_size": 0.0048, "color": Color("#ef5a67")}
+			return {"path": "res://GJGamejam素材/2.5D物品/s2_adren_clean.png", "pixel_size": 0.0062}
 		"spring_glove":
-			return {"path": "res://GJGamejam素材/2.5D物品/钥匙.png", "pixel_size": 0.0062, "color": Color("#f3cc62")}
+			return {"path": "res://GJGamejam素材/2.5D物品/gm2_glove_clean.png", "pixel_size": 0.0062}
 		"detector":
-			return {"path": "res://GJGamejam素材/2.5D物品/钥匙.png", "pixel_size": 0.0062, "color": Color("#78d7e8")}
+			return {"path": "res://GJGamejam素材/2.5D物品/gm2_detector_clean.png", "pixel_size": 0.0062}
 		_:
 			return {"path": "res://GJGamejam素材/2.5D物品/玩偶.png", "pixel_size": 0.0062}
 
