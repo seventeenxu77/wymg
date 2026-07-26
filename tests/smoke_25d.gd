@@ -41,6 +41,20 @@ func _run() -> void:
 	assert((renderer.thief_camera.cull_mask & World25D.LAYER_SHARED_ACTORS) != 0)
 	var monster_sprite := renderer.monster_node.get_node("SwayPivot/PaperSprite") as Sprite3D
 	var thief_sprite := renderer.thief_node.get_node("SwayPivot/PaperSprite") as Sprite3D
+	assert(monster_sprite.billboard == BaseMaterial3D.BILLBOARD_FIXED_Y)
+	assert(thief_sprite.billboard == BaseMaterial3D.BILLBOARD_FIXED_Y)
+	assert(monster_sprite.alpha_cut == SpriteBase3D.ALPHA_CUT_DISABLED)
+	assert(thief_sprite.alpha_cut == SpriteBase3D.ALPHA_CUT_DISABLED)
+	assert(monster_sprite.render_priority == 1)
+	assert(thief_sprite.render_priority == 1)
+	assert(is_equal_approx(
+		monster_sprite.position.y,
+		monster_sprite.texture.get_height() * monster_sprite.pixel_size * 0.5
+	))
+	assert(is_equal_approx(
+		thief_sprite.position.y,
+		thief_sprite.texture.get_height() * thief_sprite.pixel_size * 0.5
+	))
 	assert((monster_sprite.layers & World25D.LAYER_SHARED_ACTORS) == 0)
 	assert((thief_sprite.layers & World25D.LAYER_SHARED_ACTORS) == 0)
 	var original_thief_room: Vector2i = game.thief["room"]
@@ -164,6 +178,29 @@ func _run() -> void:
 	assert((follow_camera_after - follow_camera_before).is_equal_approx(follow_actor_after - follow_actor_before))
 	assert((follow_camera_before - follow_actor_before).is_equal_approx(follow_camera_after - follow_actor_after))
 
+	# The actor has a circular ground footprint. It cannot put its feet into a
+	# solid wall, but can still cross a centered door without camera-dependent
+	# collision changes.
+	var collision_room: Dictionary = game._room_at(game.monster["room"])
+	collision_room["doors"].erase("left")
+	game.monster["pos"] = Vector2(game.ACTOR_COLLISION_RADIUS + 0.01, 1.25)
+	game._move_actor_continuous("monster", Vector2.LEFT, 0.1)
+	assert(game.monster["pos"].x >= game.ACTOR_COLLISION_RADIUS)
+	collision_room["doors"].append("left")
+	game.monster["pos"] = Vector2(game.ACTOR_COLLISION_RADIUS + 0.01, 1.25)
+	game._move_actor_continuous("monster", Vector2.LEFT, 0.1)
+	assert(game.monster["pos"].x >= game.ACTOR_COLLISION_RADIUS)
+	var room_left_of_collision: Dictionary = game._room_at(game.monster["room"] + Vector2i.LEFT)
+	if not room_left_of_collision["doors"].has("right"):
+		room_left_of_collision["doors"].append("right")
+	game.monster["pos"] = Vector2(game.ACTOR_COLLISION_RADIUS + 0.01, 2.5)
+	var room_before_door: Vector2i = game.monster["room"]
+	game._move_actor_continuous("monster", Vector2.LEFT, 0.1)
+	assert(game.monster["room"] == room_before_door + Vector2i.LEFT)
+	game.monster["room"] = room_before_door
+	game.monster["pos"] = Vector2(2.5, 2.5)
+	renderer.sync(game.rooms, game.monster, game.thief, game.afterimages, game.dragging, false, game.elapsed)
+
 	var monster_key: String = renderer._room_key(game.monster["room"])
 	var thief_key: String = renderer._room_key(game.thief["room"])
 	assert(renderer.active_monster_room == game.monster["room"])
@@ -203,8 +240,11 @@ func _run() -> void:
 			assert(generated_furniture.has("contents"))
 			assert(generated_furniture.has("durability"))
 			for generated_content in generated_furniture["contents"]:
-				assert(generated_content["kind"] == "trinket")
-				assert(int(generated_content["value"]) == 1)
+				assert(str(generated_content["kind"]) in ["trinket", "tool"])
+				if generated_content["kind"] == "trinket":
+					assert(int(generated_content["value"]) == 1)
+				else:
+					assert(game.TOOL_DEFS.has(str(generated_content["tool_type"])))
 
 	game.new_game()
 	var storage_room: Dictionary = game._room_at(game.monster["room"])
@@ -262,6 +302,12 @@ func _run() -> void:
 	var storage_rotation_before: float = (renderer.furniture_nodes["test-storage"] as Node3D).rotation.y
 	renderer.sync(game.rooms, game.monster, game.thief, game.afterimages, game.dragging, false, game.elapsed + 0.07)
 	var storage_rotation_after: float = (renderer.furniture_nodes["test-storage"] as Node3D).rotation.y
+	assert(is_equal_approx(storage_rotation_before, storage_rotation_after))
+	test_storage["detector_active"] = true
+	renderer.sync(game.rooms, game.monster, game.thief, game.afterimages, game.dragging, false, game.elapsed)
+	storage_rotation_before = (renderer.furniture_nodes["test-storage"] as Node3D).rotation.y
+	renderer.sync(game.rooms, game.monster, game.thief, game.afterimages, game.dragging, false, game.elapsed + 0.07)
+	storage_rotation_after = (renderer.furniture_nodes["test-storage"] as Node3D).rotation.y
 	assert(not is_equal_approx(storage_rotation_before, storage_rotation_after))
 	assert(game.selected_treasure == 0)
 	_press_key(game, KEY_R, KEY_R)
@@ -284,7 +330,7 @@ func _run() -> void:
 		"label": "旧怀表",
 		"value": 1,
 	})
-	assert(renderer._furniture_content_value(test_storage) == 3)
+	assert(renderer._furniture_content_value(test_storage) == 2)
 
 	game.phase = "hunt"
 	game.thief["room"] = game.monster["room"]

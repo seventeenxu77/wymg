@@ -9,6 +9,11 @@ const VIEWPORT_SIZE := Vector2i(768, 768)
 const CAMERA_HEIGHT := 10.0
 const CAMERA_DISTANCE := 15.0
 const CAMERA_FOV := 50.0
+const DOOR_GAP := 2.65
+const ITEM_SHAKE_CYCLE := 2.35
+const ITEM_SHAKE_BURST := 0.78
+const ITEM_SHAKE_FREQUENCY := 31.0
+const ITEM_SHAKE_DISTANCE := 0.11
 const INVALID_ROOM := Vector2i(-999, -999)
 
 const LAYER_MONSTER_WORLD := 1
@@ -267,7 +272,7 @@ func _create_wall(room: Vector2i, origin: Vector3, side: String, has_door: bool)
 	var height := 1.05
 	var material := wall_material
 	var total := ROOM_EXTENT * 2.0
-	var gap := 2.65
+	var gap := DOOR_GAP
 	if not has_door:
 		_add_wall_piece(room, origin, side, 0.0, total, height, material)
 		return
@@ -326,24 +331,47 @@ func _create_actor(role: String, layer: int) -> Node3D:
 	var sway_pivot := Node3D.new()
 	sway_pivot.name = "SwayPivot"
 	actor.add_child(sway_pivot)
+	var texture: Texture2D = load("res://GJGamejam素材/人物/怪物.png" if role == "monster" else "res://GJGamejam素材/人物/主角.png")
+	var pixel_size := 0.00263 if role == "monster" else 0.00270
+	# These source pixels are the center of the lowest supporting foot in each
+	# cutout. The generated quad is shifted so this point, rather than the
+	# texture center, is exactly above the actor's ground position.
+	var foot_x := 372.0 if role == "monster" else 300.0
 	var outline := Sprite3D.new()
 	outline.name = "OutlineSprite"
-	outline.texture = load("res://GJGamejam素材/人物/怪物.png" if role == "monster" else "res://GJGamejam素材/人物/主角.png")
-	outline.pixel_size = (0.00263 if role == "monster" else 0.00270) * 1.12
-	outline.position.y = 0.84
+	outline.texture = texture
+	outline.pixel_size = pixel_size * 1.12
+	outline.position = _foot_anchored_sprite_position(texture, outline.pixel_size, foot_x)
 	outline.modulate = Color.BLACK
-	outline.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	outline.billboard = BaseMaterial3D.BILLBOARD_FIXED_Y
+	# Keep the two overlapping cutouts in the transparent pass. Making both
+	# coplanar sprites write opaque depth causes severe z-fighting while moving.
+	outline.alpha_cut = SpriteBase3D.ALPHA_CUT_DISABLED
+	outline.render_priority = 0
+	outline.set_meta("foot_offset_x", outline.position.x)
 	outline.layers = layer
 	sway_pivot.add_child(outline)
 	var sprite := Sprite3D.new()
 	sprite.name = "PaperSprite"
-	sprite.texture = load("res://GJGamejam素材/人物/怪物.png" if role == "monster" else "res://GJGamejam素材/人物/主角.png")
-	sprite.pixel_size = 0.00263 if role == "monster" else 0.00270
-	sprite.position.y = 0.86
-	sprite.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	sprite.texture = texture
+	sprite.pixel_size = pixel_size
+	sprite.position = _foot_anchored_sprite_position(texture, sprite.pixel_size, foot_x)
+	sprite.billboard = BaseMaterial3D.BILLBOARD_FIXED_Y
+	sprite.alpha_cut = SpriteBase3D.ALPHA_CUT_DISABLED
+	sprite.render_priority = 1
+	sprite.set_meta("foot_offset_x", sprite.position.x)
 	sprite.layers = layer
 	sway_pivot.add_child(sprite)
 	return actor
+
+
+func _foot_anchored_sprite_position(texture: Texture2D, pixel_size: float, foot_x: float) -> Vector3:
+	var texture_size := texture.get_size()
+	return Vector3(
+		(texture_size.x * 0.5 - foot_x) * pixel_size,
+		texture_size.y * pixel_size * 0.5,
+		0.0,
+	)
 
 
 func _create_furniture_node(room: Vector2i, furniture: Dictionary) -> void:
@@ -435,10 +463,18 @@ func _create_item_node(room: Vector2i, item: Dictionary) -> void:
 	node.name = str(item["id"])
 	level_root.add_child(node)
 	var sprite := Sprite3D.new()
-	sprite.texture = load("res://assets/25d/pill.svg" if item["kind"] == "pill" else "res://GJGamejam素材/2.5D物品/红宝石.png")
-	sprite.pixel_size = 0.0048 if item["kind"] == "pill" else (0.0084 if item["kind"] == "trinket" else 0.01006)
-	sprite.position.y = 0.42
-	sprite.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	sprite.name = "ItemSprite"
+	var visual := _item_visual_info(item)
+	sprite.texture = load(visual["path"])
+	sprite.pixel_size = float(visual["pixel_size"])
+	sprite.modulate = visual.get("color", Color.WHITE)
+	if str(item.get("device_type", "")) == "decoy":
+		var foot_x := 372.0 if str(item.get("character_role", "")) == "monster" else 300.0
+		sprite.position = _foot_anchored_sprite_position(sprite.texture, sprite.pixel_size, foot_x)
+		sprite.billboard = BaseMaterial3D.BILLBOARD_FIXED_Y
+	else:
+		sprite.position.y = float(visual.get("height", 0.42))
+		sprite.billboard = BaseMaterial3D.BILLBOARD_ENABLED
 	_register_room_visual(room, sprite)
 	node.add_child(sprite)
 	if item["kind"] == "treasure" or item["kind"] == "trinket":
@@ -451,8 +487,59 @@ func _create_item_node(room: Vector2i, item: Dictionary) -> void:
 		value_label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
 		_register_room_visual(room, value_label)
 		node.add_child(value_label)
+	elif str(item.get("kind", "")) in ["tool", "device"] and str(item.get("device_type", "")) != "decoy":
+		var item_label := Label3D.new()
+		item_label.name = "ItemLabel"
+		item_label.text = str(item.get("label", "道具"))
+		item_label.font_size = 30
+		item_label.pixel_size = 0.0045
+		item_label.position = Vector3(0, 0.92, 0)
+		item_label.modulate = Color("#f4ead3")
+		item_label.outline_modulate = Color("#171814")
+		item_label.outline_size = 5
+		item_label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+		item_label.no_depth_test = true
+		_register_room_visual(room, item_label)
+		node.add_child(item_label)
 	node.position = world_position(room, item["pos"])
 	item_nodes[item["id"]] = node
+
+
+func _item_visual_info(item: Dictionary) -> Dictionary:
+	var kind := str(item.get("kind", ""))
+	if kind == "pill":
+		return {"path": "res://assets/25d/pill.svg", "pixel_size": 0.0048}
+	if kind == "treasure" or kind == "trinket":
+		return {
+			"path": "res://GJGamejam素材/2.5D物品/红宝石.png",
+			"pixel_size": 0.0084 if kind == "trinket" else 0.01006,
+		}
+	var tool_type := str(item.get("tool_type", item.get("device_type", "")))
+	match tool_type:
+		"trap":
+			return {"path": "res://GJGamejam素材/2.5D物品/r3_trapclosed_clean.png", "pixel_size": 0.0105, "height": 0.24}
+		"decoy":
+			if kind != "device":
+				return {"path": "res://GJGamejam素材/2.5D物品/玩偶.png", "pixel_size": 0.0062}
+			var character_role := str(item.get("character_role", item.get("owner", "thief")))
+			return {
+				"path": "res://GJGamejam素材/人物/怪物.png" if character_role == "monster" else "res://GJGamejam素材/人物/主角.png",
+				"pixel_size": 0.00262 if character_role == "monster" else 0.00270,
+			}
+		"alarm":
+			return {"path": "res://GJGamejam素材/2.5D物品/白蜡烛燃烧.png", "pixel_size": 0.0062}
+		"phonograph":
+			return {"path": "res://GJGamejam素材/2.5D物品/r3_chest_clean.png", "pixel_size": 0.0105}
+		"teleporter":
+			return {"path": "res://GJGamejam素材/2.5D物品/红宝石.png", "pixel_size": 0.01006, "color": Color("#6ed5ff")}
+		"adrenaline":
+			return {"path": "res://assets/25d/pill.svg", "pixel_size": 0.0048, "color": Color("#ef5a67")}
+		"spring_glove":
+			return {"path": "res://GJGamejam素材/2.5D物品/钥匙.png", "pixel_size": 0.0062, "color": Color("#f3cc62")}
+		"detector":
+			return {"path": "res://GJGamejam素材/2.5D物品/钥匙.png", "pixel_size": 0.0062, "color": Color("#78d7e8")}
+		_:
+			return {"path": "res://GJGamejam素材/2.5D物品/玩偶.png", "pixel_size": 0.0062}
 
 
 func _create_attack_cone() -> MeshInstance3D:
@@ -495,7 +582,11 @@ func sync(rooms: Array, monster: Dictionary, thief: Dictionary, afterimages: Arr
 			furniture_node.position = world_position(coord, furniture["pos"])
 			var content_value := _furniture_content_value(furniture)
 			var shake_degrees := 0.0
-			if not bool(furniture.get("destroyed", false)) and content_value > 0:
+			if (
+				not bool(furniture.get("destroyed", false))
+				and bool(furniture.get("detector_active", false))
+				and content_value > 0
+			):
 				shake_degrees = minf(1.2 + float(content_value) * 1.25, 11.0)
 			if time - float(furniture.get("last_hit_time", -10.0)) < 0.48:
 				shake_degrees = maxf(shake_degrees, 13.0)
@@ -521,19 +612,69 @@ func sync(rooms: Array, monster: Dictionary, thief: Dictionary, afterimages: Arr
 			if not item_nodes.has(item_id):
 				_create_item_node(coord, item)
 			var item_node: Node3D = item_nodes[item_id]
-			item_node.position = world_position(coord, item["pos"])
-			item_node.visible = not bool(item["collected"]) and not _item_hidden(room, item)
+			var item_kind := str(item.get("kind", ""))
+			var visual_position := world_position(coord, item["pos"])
+			if (
+				item_kind == "tool"
+				or (
+					item_kind == "device"
+					and str(item.get("device_type", "")) == "trap"
+					and str(item.get("state", "")) == "recoverable"
+				)
+			):
+				visual_position += _pickup_item_shake_offset(item_id, time)
+			item_node.position = visual_position
+			item_node.visible = (
+				not bool(item["collected"])
+				and (item_kind in ["tool", "device"] or not _item_hidden(room, item))
+			)
+			var item_label: Label3D = item_node.get_node_or_null("ItemLabel")
+			if item_label:
+				if item_kind == "device" and str(item.get("device_type", "")) == "trap":
+					item_label.text = "可拾取捕兽夹" if str(item.get("state", "")) == "recoverable" else "捕兽夹"
+				elif item_kind == "device" and str(item.get("device_type", "")) == "phonograph":
+					item_label.text = "留声机（待启动）" if str(item.get("state", "")) == "idle" else "留声机"
+				else:
+					item_label.text = str(item.get("label", "道具"))
+			var item_sprite: Sprite3D = item_node.get_node_or_null("ItemSprite")
+			if (
+				item_sprite
+				and item_kind == "device"
+				and str(item.get("device_type", "")) == "trap"
+			):
+				var trap_path := (
+					"res://GJGamejam素材/2.5D物品/r3_trapclosed_clean.png"
+					if str(item.get("state", "")) == "active"
+					else "res://GJGamejam素材/2.5D物品/r3_trapopen_clean.png"
+				)
+				var trap_texture: Texture2D = load(trap_path)
+				if item_sprite.texture != trap_texture:
+					item_sprite.texture = trap_texture
 		_sync_room_marks(room)
 	_sync_afterimages(afterimages, monster["room"], thief["room"])
 	_sync_attack(monster, attack_active)
 	_sync_room_layers(monster["room"], thief["room"])
 
 
+func _pickup_item_shake_offset(item_id: String, time: float) -> Vector3:
+	var phase := float(abs(item_id.hash()) % 1000) / 1000.0 * ITEM_SHAKE_CYCLE
+	var cycle_time := fmod(time + phase, ITEM_SHAKE_CYCLE)
+	if cycle_time >= ITEM_SHAKE_BURST:
+		return Vector3.ZERO
+	var fade := sin(cycle_time / ITEM_SHAKE_BURST * PI)
+	var horizontal := sin((time + phase) * ITEM_SHAKE_FREQUENCY) * ITEM_SHAKE_DISTANCE * fade
+	var depth := cos((time + phase) * ITEM_SHAKE_FREQUENCY * 0.83) * ITEM_SHAKE_DISTANCE * 0.35 * fade
+	return Vector3(horizontal, 0.0, depth)
+
+
 func _furniture_content_value(furniture: Dictionary) -> int:
-	var total := 0
 	for content in furniture.get("contents", []):
-		total += int(content.get("value", 0))
-	return total
+		var kind := str(content.get("kind", ""))
+		if kind == "treasure":
+			return int(content.get("value", 0))
+		if kind == "alarm":
+			return int(content.get("signal_value", 3))
+	return 0
 
 
 func _sync_actor(node: Node3D, actor: Dictionary, time: float, is_thief: bool) -> void:
@@ -548,22 +689,25 @@ func _sync_actor(node: Node3D, actor: Dictionary, time: float, is_thief: bool) -
 	var outline: Sprite3D = pivot.get_node_or_null("OutlineSprite")
 	var dir: String = actor["dir"]
 	sprite.flip_h = dir == "left"
+	var sprite_foot_offset := float(sprite.get_meta("foot_offset_x", 0.0))
+	sprite.position.x = -sprite_foot_offset if sprite.flip_h else sprite_foot_offset
 	if outline:
 		outline.flip_h = sprite.flip_h
+		var outline_foot_offset := float(outline.get_meta("foot_offset_x", 0.0))
+		outline.position.x = -outline_foot_offset if outline.flip_h else outline_foot_offset
 	var phase_offset := 1.6 if is_thief else 0.0
 	var moving: bool = actor.get("moving", false)
 	if moving:
-		# Up/down bobbing during movement
-		pivot.position = Vector3(0, sin(time * 14.0 + phase_offset) * 0.35, 0)
+		# Keep the foot planted at the actor origin. A small upward-only step
+		# gives motion without driving the cutout below the floor or away from
+		# its shadow.
+		pivot.position = Vector3(0, absf(sin(time * 14.0 + phase_offset)) * 0.22, 0)
 		pivot.rotation.z = 0.0
 	else:
-		# Left/right swaying when idle
-		pivot.position = Vector3(
-			sin(time * 2.5 + phase_offset) * 0.18,
-			sin(time * 1.8 + phase_offset) * 0.025,
-			0,
-		)
-		pivot.rotation.z = sin(time * 2.5 + phase_offset) * 0.25
+		# Rotate gently around the foot anchor instead of translating the whole
+		# image away from the ground shadow.
+		pivot.position = Vector3.ZERO
+		pivot.rotation.z = sin(time * 2.5 + phase_offset) * 0.045
 
 
 func _set_actor_visual_layers(node: Node, layers: int) -> void:

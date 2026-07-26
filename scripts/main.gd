@@ -7,17 +7,37 @@ const WORLD_25D_SCRIPT := preload("res://scripts/world_25d.gd")
 const MAP_SIZE := 6
 const ROOM_SIZE := 5.0
 const ACTOR_SPEED := 4.0
+const ACTOR_COLLISION_RADIUS := 0.25
 const FURNITURE_SPEED := 2.0
 const ROTATION_SPEED := 90.0
 const ROTATION_STEP := 4.0
 const FURNITURE_HIT_REACH := 1.35
 const FURNITURE_HIT_DOT := 0.62
 const TRINKET_SPAWN_CHANCE := 0.5
+const PILL_SPAWN_COUNT := 3
+const HIDDEN_TOOL_RATIO := 0.5
 const HIT_WINDUP_TIME := 0.16
 const HIT_LUNGE_TIME := 0.14
 const HIT_RECOVER_TIME := 0.16
 const HIT_WINDUP_DISTANCE := 0.22
 const HIT_LUNGE_DISTANCE := 0.38
+const TOOL_INVENTORY_CAPACITY := 3
+const DETECTOR_BATTERY_SECONDS := 18.0
+const DETECTOR_NOISE_INTERVAL := 3.0
+const TRAP_ESCAPE_PRESSES := 20
+const TRAP_TRIGGER_RADIUS := 0.34
+const TRAP_ARM_DELAY := 0.6
+const ADRENALINE_SECONDS := 6.0
+const FATIGUE_SECONDS := 3.0
+const DECOY_SECONDS := 5.0
+const DECOY_DASH_DISTANCE := 1.15
+const PHONOGRAPH_DELAY := 2.0
+const PHONOGRAPH_SECONDS := 10.0
+const TELEPORT_CHANNEL_SECONDS := 5.0
+const SPRING_GLOVE_REACH := 1.45
+const SPRING_GLOVE_KNOCKBACK := 1.2
+const SPRING_GLOVE_STUN_SECONDS := 1.0
+const NOISE_SAMPLE_RATE := 11025
 const ENTRANCE_ROOM := Vector2i(0, 5)
 const ENTRANCE_POS := Vector2(0.5, 4.5)
 const MONSTER_SPAWN_ROOM := Vector2i(5, 0)
@@ -51,6 +71,28 @@ const TREASURES := [
 
 const TRINKETS := ["旧怀表", "银汤匙", "铜制烟盒", "珍珠纽扣"]
 
+const TOOL_DEFS := {
+	"detector": {"label": "藏品探测器", "short": "探测", "color": Color("#78d7e8")},
+	"alarm": {"label": "警报器", "short": "警报", "color": Color("#f0735f")},
+	"trap": {"label": "捕兽夹", "short": "兽夹", "color": Color("#c6a66a")},
+	"adrenaline": {"label": "肾上腺素", "short": "加速", "color": Color("#e45b68")},
+	"decoy": {"label": "替身玩偶", "short": "替身", "color": Color("#b98be2")},
+	"phonograph": {"label": "留声机", "short": "留声", "color": Color("#d49a5b")},
+	"teleporter": {"label": "传送器", "short": "传送", "color": Color("#68c8ff")},
+	"spring_glove": {"label": "弹簧拳套", "short": "拳套", "color": Color("#f1c65a")},
+}
+
+const TOOL_SPAWN_COUNTS := {
+	"detector": 2,
+	"alarm": 2,
+	"trap": 2,
+	"adrenaline": 2,
+	"decoy": 2,
+	"phonograph": 2,
+	"teleporter": 1,
+	"spring_glove": 2,
+}
+
 var rng := RandomNumberGenerator.new()
 var rooms: Array = []
 var monster: Dictionary = {}
@@ -80,6 +122,13 @@ var early_rect := Rect2()
 var result_restart_rect := Rect2()
 var help_open := {"monster": false, "thief": false}
 var help_rects := {"monster": Rect2(), "thief": Rect2()}
+var tool_inventories := {"monster": [], "thief": []}
+var tool_selected := {"monster": 0, "thief": 0}
+var status_effects := {"monster": {}, "thief": {}}
+var trapped_by := {"monster": "", "thief": ""}
+var trap_escape_progress := {"monster": 0, "thief": 0}
+var trap_expected_left := {"monster": true, "thief": true}
+var next_device_id := 0
 
 var font: Font
 var world_25d: World25D
@@ -124,6 +173,16 @@ func new_game() -> void:
 	result_restart_rect = Rect2()
 	help_open = {"monster": false, "thief": false}
 	help_rects = {"monster": Rect2(), "thief": Rect2()}
+	tool_inventories = {"monster": [], "thief": []}
+	tool_selected = {"monster": 0, "thief": 0}
+	status_effects = {
+		"monster": _fresh_status_effects(),
+		"thief": _fresh_status_effects(),
+	}
+	trapped_by = {"monster": "", "thief": ""}
+	trap_escape_progress = {"monster": 0, "thief": 0}
+	trap_expected_left = {"monster": true, "thief": true}
+	next_device_id = 0
 	restart_rect = Rect2()
 	early_rect = Rect2()
 	logs = ["藏宝阶段开始：怪物持有 3 件藏品。"]
@@ -161,6 +220,8 @@ func _physics_process(delta: float) -> void:
 	elapsed += delta
 	_update_phase(delta)
 	_update_temporary_events()
+	_update_tool_states(delta)
+	_update_devices()
 	_update_furniture_hit_actions(delta)
 	_update_storage_panel()
 	if phase == "hunt":
@@ -215,6 +276,8 @@ func _apply_view_relative_input(role: String, screen_input: Vector2, delta: floa
 		return
 	if bool(help_open[role]):
 		return
+	if not _role_can_act(role):
+		return
 	if not (furniture_hit_actions[role] as Dictionary).is_empty():
 		return
 	if role == "monster" and not _active_storage_furniture().is_empty():
@@ -259,6 +322,12 @@ func _input(event: InputEvent) -> void:
 		return
 	if _help_blocks_key(key, physical):
 		return
+	if _handle_trap_escape_input("monster", key, physical):
+		get_viewport().set_input_as_handled()
+		return
+	if _handle_trap_escape_input("thief", key, physical):
+		get_viewport().set_input_as_handled()
+		return
 	if _handle_storage_panel_input(key, physical):
 		get_viewport().set_input_as_handled()
 		return
@@ -274,14 +343,28 @@ func _input(event: InputEvent) -> void:
 		_hit_furniture("monster")
 	elif physical == KEY_SPACE:
 		_attack()
+	elif physical == KEY_R:
+		_pick_up_nearby("monster")
+	elif physical == KEY_Z:
+		_cycle_tool("monster", -1)
+	elif physical == KEY_X:
+		_cycle_tool("monster", 1)
+	elif physical == KEY_F:
+		_use_selected_tool("monster")
 	elif key == KEY_KP_0:
 		_hit_furniture("thief")
 	elif key == KEY_KP_1:
-		_thief_search()
+		_pick_up_nearby("thief")
 	elif key == KEY_KP_2:
 		_use_pill()
+	elif key == KEY_KP_3:
+		_use_selected_tool("thief")
+	elif key == KEY_KP_4:
+		_cycle_tool("thief", -1)
 	elif key == KEY_KP_5:
 		_thief_exit()
+	elif key == KEY_KP_6:
+		_cycle_tool("thief", 1)
 	elif key == KEY_KP_7:
 		if world_25d:
 			world_25d.rotate_camera("thief", -1)
@@ -293,11 +376,13 @@ func _input(event: InputEvent) -> void:
 func _help_blocks_key(key: Key, physical: Key) -> bool:
 	if bool(help_open["monster"]) and physical in [
 		KEY_W, KEY_A, KEY_S, KEY_D, KEY_Q, KEY_E, KEY_G, KEY_R, KEY_SPACE,
+		KEY_Z, KEY_X, KEY_F,
 	]:
 		return true
 	if bool(help_open["thief"]) and key in [
 		KEY_UP, KEY_DOWN, KEY_LEFT, KEY_RIGHT,
-		KEY_KP_0, KEY_KP_1, KEY_KP_2, KEY_KP_5, KEY_KP_7, KEY_KP_9,
+		KEY_KP_0, KEY_KP_1, KEY_KP_2, KEY_KP_3, KEY_KP_4, KEY_KP_5,
+		KEY_KP_6, KEY_KP_7, KEY_KP_9,
 	]:
 		return true
 	return false
@@ -417,8 +502,9 @@ func _generate_rooms() -> Array:
 				"last_hit_time": -10.0,
 			})
 
-	for index in range(5):
-		var room: Dictionary = generated[rng.randi_range(0, generated.size() - 1)]
+	var visible_room_keys: Dictionary = {}
+	for index in range(PILL_SPAWN_COUNT):
+		var room := _random_room_for_visible_item(generated, visible_room_keys)
 		var pos := _empty_position(room)
 		room["items"].append({
 			"id": "pill-%d" % index,
@@ -428,7 +514,75 @@ func _generate_rooms() -> Array:
 			"pos": pos,
 			"collected": false,
 		})
+		visible_room_keys[_room_key_for_distribution(room["coord"])] = room["coord"]
+	var hidden_furniture: Array = []
+	for room in generated:
+		for furniture in room["furniture"]:
+			hidden_furniture.append(furniture)
+	_shuffle_with_rng(hidden_furniture)
+	var hidden_tool_count := int(round(float(_total_tool_spawn_count()) * HIDDEN_TOOL_RATIO))
+	var generated_tools: Array = []
+	var tool_index := 0
+	for tool_type in TOOL_SPAWN_COUNTS:
+		for _copy in range(int(TOOL_SPAWN_COUNTS[tool_type])):
+			generated_tools.append(_make_tool_instance(str(tool_type), "tool-%d" % tool_index))
+			tool_index += 1
+	_shuffle_with_rng(generated_tools)
+	var hidden_index := 0
+	for index in range(generated_tools.size()):
+		var tool_item: Dictionary = generated_tools[index]
+		if index < hidden_tool_count and hidden_index < hidden_furniture.size():
+			(hidden_furniture[hidden_index] as Dictionary)["contents"].append(tool_item)
+			hidden_index += 1
+		else:
+			var room := _random_room_for_visible_item(generated, visible_room_keys)
+			tool_item["pos"] = _empty_position(room)
+			tool_item["collected"] = false
+			room["items"].append(tool_item)
+			visible_room_keys[_room_key_for_distribution(room["coord"])] = room["coord"]
 	return generated
+
+
+func _total_tool_spawn_count() -> int:
+	var total := 0
+	for count in TOOL_SPAWN_COUNTS.values():
+		total += int(count)
+	return total
+
+
+func _room_key_for_distribution(coord: Vector2i) -> String:
+	return "%d:%d" % [coord.x, coord.y]
+
+
+func _random_room_for_visible_item(generated: Array, used_room_keys: Dictionary) -> Dictionary:
+	var candidates: Array = []
+	for room in generated:
+		var coord: Vector2i = room["coord"]
+		if used_room_keys.has(_room_key_for_distribution(coord)):
+			continue
+		var sufficiently_separated := true
+		for used_coord in used_room_keys.values():
+			var other: Vector2i = used_coord
+			if abs(coord.x - other.x) + abs(coord.y - other.y) < 2:
+				sufficiently_separated = false
+				break
+		if sufficiently_separated:
+			candidates.append(room)
+	if candidates.is_empty():
+		for room in generated:
+			if not used_room_keys.has(_room_key_for_distribution(room["coord"])):
+				candidates.append(room)
+	if candidates.is_empty():
+		candidates = generated
+	return candidates[rng.randi_range(0, candidates.size() - 1)]
+
+
+func _shuffle_with_rng(entries: Array) -> void:
+	for index in range(entries.size() - 1, 0, -1):
+		var swap_index := rng.randi_range(0, index)
+		var temporary = entries[index]
+		entries[index] = entries[swap_index]
+		entries[swap_index] = temporary
 
 
 func _furniture_durability(kind: String) -> int:
@@ -468,28 +622,132 @@ func _role_name(role: String) -> String:
 	return "怪物" if role == "monster" else "盗贼"
 
 
+func _fresh_status_effects() -> Dictionary:
+	return {
+		"adrenaline_until": 0.0,
+		"fatigue_until": 0.0,
+		"stunned_until": 0.0,
+		"teleport_started": -1.0,
+		"teleport_ends": -1.0,
+	}
+
+
+func _make_tool_instance(tool_type: String, id: String) -> Dictionary:
+	var definition: Dictionary = TOOL_DEFS[tool_type]
+	var result := {
+		"id": id,
+		"kind": "tool",
+		"tool_type": tool_type,
+		"label": definition["label"],
+		"value": 0,
+	}
+	if tool_type == "detector":
+		result["charge"] = DETECTOR_BATTERY_SECONDS
+		result["active"] = false
+		result["next_noise"] = 0.0
+	return result
+
+
 func _push_log(message: String) -> void:
 	logs.push_front(message)
 	if logs.size() > 5:
 		logs.resize(5)
 
 
-func _add_noise(role: String, label: String, actor_override: Dictionary = {}, throttle := 0.0) -> void:
+func _add_noise(
+	role: String,
+	label: String,
+	actor_override: Dictionary = {},
+	throttle := 0.0,
+	duration := 2.0,
+	global := false
+) -> void:
 	if phase != "hunt":
 		return
 	var actor := actor_override if not actor_override.is_empty() else _get_actor(role)
+	_add_noise_at(role, label, actor["room"], actor["pos"], throttle, duration, global)
+
+
+func _add_noise_at(
+	source: String,
+	label: String,
+	room: Vector2i,
+	pos: Vector2,
+	throttle := 0.0,
+	duration := 2.0,
+	global := false
+) -> void:
+	if phase != "hunt":
+		return
 	if throttle > 0.0:
 		for existing in noises:
-			if existing["source"] == role and existing["label"] == label and elapsed - float(existing["created"]) < throttle:
+			if existing["source"] == source and existing["label"] == label and elapsed - float(existing["created"]) < throttle:
 				return
 	noises.append({
-		"source": role,
+		"source": source,
 		"label": label,
-		"room": actor["room"],
-		"pos": actor["pos"],
+		"room": room,
+		"pos": pos,
 		"created": elapsed,
-		"expires": elapsed + 2.0,
+		"expires": elapsed + duration,
+		"duration": duration,
+		"global": global,
 	})
+	if global:
+		_play_global_noise(label, duration)
+
+
+func _play_global_noise(label: String, event_duration: float) -> void:
+	if not is_inside_tree():
+		return
+	var sound_duration := 0.22
+	var base_frequency := 360.0
+	if "警报" in label:
+		sound_duration = minf(event_duration, 5.0)
+		base_frequency = 520.0
+	elif "传送器" in label:
+		sound_duration = minf(event_duration, TELEPORT_CHANNEL_SECONDS)
+		base_frequency = 92.0
+	elif "捕兽夹触发" in label:
+		sound_duration = 0.72
+		base_frequency = 180.0
+	elif "捕兽夹" in label:
+		sound_duration = 0.18
+		base_frequency = 240.0
+	elif "留声机" in label:
+		sound_duration = 0.2
+		base_frequency = 145.0
+	elif "探测器" in label:
+		sound_duration = 0.16
+		base_frequency = 760.0
+	var sample_count := maxi(1, int(ceil(sound_duration * NOISE_SAMPLE_RATE)))
+	var bytes := PackedByteArray()
+	bytes.resize(sample_count * 2)
+	for index in range(sample_count):
+		var sample_time := float(index) / float(NOISE_SAMPLE_RATE)
+		var remaining := sound_duration - sample_time
+		var envelope := minf(sample_time * 28.0, 1.0) * minf(remaining * 18.0, 1.0)
+		var frequency := base_frequency
+		if "警报" in label:
+			frequency *= 1.32 if int(sample_time * 4.0) % 2 == 0 else 0.88
+		elif "传送器" in label:
+			frequency += sin(sample_time * TAU * 0.8) * 18.0
+		var wave := sin(sample_time * TAU * frequency)
+		if "留声机" in label or "捕兽夹" in label:
+			wave = signf(wave) * 0.65 + sin(sample_time * TAU * frequency * 2.31) * 0.35
+		var sample_value := int(clampf(wave * envelope * 0.24, -1.0, 1.0) * 32767.0)
+		bytes.encode_s16(index * 2, sample_value)
+	var stream := AudioStreamWAV.new()
+	stream.format = AudioStreamWAV.FORMAT_16_BITS
+	stream.mix_rate = NOISE_SAMPLE_RATE
+	stream.stereo = false
+	stream.data = bytes
+	var player := AudioStreamPlayer.new()
+	player.stream = stream
+	player.volume_db = -8.0
+	add_child(player)
+	player.finished.connect(player.queue_free)
+	player.play()
 
 
 func _reveal_thief(actor_override: Dictionary = {}) -> void:
@@ -517,6 +775,17 @@ func _begin_hunt_countdown() -> void:
 	drag_mode = {"monster": "move", "thief": "move"}
 	furniture_hit_actions = {"monster": {}, "thief": {}}
 	active_storage_id = ""
+	status_effects = {
+		"monster": _fresh_status_effects(),
+		"thief": _fresh_status_effects(),
+	}
+	trapped_by = {"monster": "", "thief": ""}
+	trap_escape_progress = {"monster": 0, "thief": 0}
+	trap_expected_left = {"monster": true, "thief": true}
+	for role in ["monster", "thief"]:
+		for tool in tool_inventories[role]:
+			if str(tool.get("tool_type", "")) == "detector":
+				tool["active"] = false
 	_push_log("藏宝结束：双方已回到起点，5 秒后正式开始。")
 
 
@@ -538,6 +807,13 @@ func _enter_hunt() -> void:
 	drag_mode = {"monster": "move", "thief": "move"}
 	furniture_hit_actions = {"monster": {}, "thief": {}}
 	active_storage_id = ""
+	status_effects = {
+		"monster": _fresh_status_effects(),
+		"thief": _fresh_status_effects(),
+	}
+	trapped_by = {"monster": "", "thief": ""}
+	trap_escape_progress = {"monster": 0, "thief": 0}
+	trap_expected_left = {"monster": true, "thief": true}
 	last_afterimage_at = -10.0
 	stomach_clock = 15.0
 	if unplaced > 0:
@@ -562,7 +838,7 @@ func _random_intact_furniture() -> Dictionary:
 	var candidates: Array = []
 	for room in rooms:
 		for furniture in room["furniture"]:
-			if not bool(furniture["destroyed"]) and not _furniture_has_treasure(furniture):
+			if not bool(furniture["destroyed"]) and not _furniture_has_primary_content(furniture):
 				candidates.append(furniture)
 	if candidates.is_empty():
 		return {}
@@ -576,12 +852,21 @@ func _furniture_has_treasure(furniture: Dictionary) -> bool:
 	return false
 
 
+func _furniture_has_primary_content(furniture: Dictionary) -> bool:
+	for content in furniture.get("contents", []):
+		if str(content.get("kind", "")) in ["treasure", "alarm"]:
+			return true
+	return false
+
+
 func _move_actor_continuous(role: String, direction: Vector2, delta: float) -> void:
 	if phase == "ended" or phase == "ready" or (phase == "hide" and role == "thief"):
 		return
+	if not _role_can_act(role):
+		return
 	if direction.is_zero_approx():
 		return
-	var speed := FURNITURE_SPEED if dragging[role] != "" else ACTOR_SPEED
+	var speed := (FURNITURE_SPEED if dragging[role] != "" else ACTOR_SPEED) * _movement_multiplier(role)
 	var intended_direction := direction.normalized()
 	var actor := _get_actor(role)
 	actor["facing"] = intended_direction
@@ -596,6 +881,22 @@ func _move_actor_continuous(role: String, direction: Vector2, delta: float) -> v
 			_move_actor_axis(role, Vector2(0, step.y))
 	actor["facing"] = intended_direction
 	actor["dir"] = _direction_name(intended_direction)
+
+
+func _role_can_act(role: String) -> bool:
+	if str(trapped_by.get(role, "")) != "":
+		return false
+	var effects: Dictionary = status_effects.get(role, {})
+	return elapsed >= float(effects.get("stunned_until", 0.0))
+
+
+func _movement_multiplier(role: String) -> float:
+	var effects: Dictionary = status_effects.get(role, {})
+	if elapsed < float(effects.get("adrenaline_until", 0.0)):
+		return 2.0
+	if elapsed < float(effects.get("fatigue_until", 0.0)):
+		return 0.5
+	return 1.0
 
 
 func _move_actor_axis(role: String, motion: Vector2) -> void:
@@ -613,8 +914,7 @@ func _move_actor_axis(role: String, motion: Vector2) -> void:
 		var blocked := (
 			next_furniture.x < 0.28 or next_furniture.y < 0.28
 			or next_furniture.x > ROOM_SIZE - 0.28 or next_furniture.y > ROOM_SIZE - 0.28
-			or next_actor.x < 0.0 or next_actor.y < 0.0
-			or next_actor.x > ROOM_SIZE or next_actor.y > ROOM_SIZE
+			or not _position_clears_room_walls(room, next_actor)
 		)
 		for other in room["furniture"]:
 			if other["id"] == held["id"]:
@@ -655,11 +955,12 @@ func _move_actor_axis(role: String, motion: Vector2) -> void:
 		if target_pos.y >= ROOM_SIZE: target_pos.y -= ROOM_SIZE
 
 	var target_room_data := _room_at(target_room)
+	if not _position_clears_room_walls(target_room_data, target_pos):
+		return
 	for furniture in target_room_data["furniture"]:
 		if bool(furniture.get("destroyed", false)):
 			continue
-		var furniture_pos: Vector2 = furniture["pos"]
-		if abs(furniture_pos.x - target_pos.x) < 0.52 and abs(furniture_pos.y - target_pos.y) < 0.52:
+		if _actor_overlaps_furniture(target_pos, furniture):
 			return
 	actor["room"] = target_room
 	actor["pos"] = target_pos
@@ -668,6 +969,54 @@ func _move_actor_axis(role: String, motion: Vector2) -> void:
 		_add_noise(role, "怪物脚步", actor, 0.42)
 	else:
 		_reveal_thief(actor)
+
+
+func _position_clears_room_walls(room: Dictionary, pos: Vector2) -> bool:
+	var doors: Array = room["doors"]
+	var door_center_limit := (
+		WORLD_25D_SCRIPT.DOOR_GAP / (2.0 * WORLD_25D_SCRIPT.CELL_SIZE)
+		- ACTOR_COLLISION_RADIUS
+	)
+	if pos.x < ACTOR_COLLISION_RADIUS:
+		if not doors.has("left") or absf(pos.y - ROOM_SIZE * 0.5) > door_center_limit:
+			return false
+	if pos.x > ROOM_SIZE - ACTOR_COLLISION_RADIUS:
+		if not doors.has("right") or absf(pos.y - ROOM_SIZE * 0.5) > door_center_limit:
+			return false
+	if pos.y < ACTOR_COLLISION_RADIUS:
+		if not doors.has("up") or absf(pos.x - ROOM_SIZE * 0.5) > door_center_limit:
+			return false
+	if pos.y > ROOM_SIZE - ACTOR_COLLISION_RADIUS:
+		if not doors.has("down") or absf(pos.x - ROOM_SIZE * 0.5) > door_center_limit:
+			return false
+	return true
+
+
+func _actor_overlaps_furniture(actor_pos: Vector2, furniture: Dictionary) -> bool:
+	var half_extents := _furniture_half_extents(str(furniture["kind"]))
+	var local_pos := (
+		actor_pos - (furniture["pos"] as Vector2)
+	).rotated(-deg_to_rad(float(furniture["rotation"])))
+	var closest := Vector2(
+		clampf(local_pos.x, -half_extents.x, half_extents.x),
+		clampf(local_pos.y, -half_extents.y, half_extents.y),
+	)
+	return local_pos.distance_squared_to(closest) < ACTOR_COLLISION_RADIUS * ACTOR_COLLISION_RADIUS
+
+
+func _furniture_half_extents(kind: String) -> Vector2:
+	# Ground-plane footprint of the renderer's hidden 3D base meshes, converted
+	# from world metres to the room's continuous coordinate system.
+	var world_size: Vector2
+	match kind:
+		"床": world_size = Vector2(1.74, 0.87)
+		"衣柜": world_size = Vector2(0.87, 0.87)
+		"书柜": world_size = Vector2(1.0, 0.87)
+		"木桶": world_size = Vector2(0.5, 0.5)
+		"木箱": world_size = Vector2(0.6, 0.6)
+		"花瓶": world_size = Vector2(0.28, 0.28)
+		_: world_size = Vector2(0.6, 0.6)
+	return world_size / WORLD_25D_SCRIPT.CELL_SIZE * 0.5
 
 
 func _direction_name(motion: Vector2) -> String:
@@ -685,6 +1034,8 @@ func _find_furniture(room: Dictionary, id: String) -> Dictionary:
 
 func _hit_furniture(role: String) -> void:
 	if phase == "ended" or phase == "ready" or (phase == "hide" and role == "thief"):
+		return
+	if not _role_can_act(role):
 		return
 	if not (furniture_hit_actions[role] as Dictionary).is_empty():
 		return
@@ -754,11 +1105,21 @@ func _apply_furniture_hit(role: String, action: Dictionary) -> void:
 	if role == "monster":
 		var was_open := bool(furniture["opened"])
 		furniture["opened"] = true
-		active_storage_id = str(furniture["id"])
-		if was_open:
-			_push_log("%s已打开，藏品面板与家具面板已显示。" % furniture["kind"])
+		_trigger_furniture_alarm(room_coord, furniture)
+		if phase == "hide":
+			active_storage_id = str(furniture["id"])
+			if was_open:
+				_push_log("%s已打开，藏品面板与家具面板已显示。" % furniture["kind"])
+			else:
+				_push_log("怪物一击打开了%s，藏品面板与家具面板已显示。" % furniture["kind"])
 		else:
-			_push_log("怪物一击打开了%s，藏品面板与家具面板已显示。" % furniture["kind"])
+			var released_tools := _release_furniture_tools(room, furniture)
+			if released_tools > 0:
+				_push_log("怪物打开%s，发现并掉出 %d 件道具。" % [furniture["kind"], released_tools])
+			elif was_open:
+				_push_log("%s已经打开，里面没有可取道具。" % furniture["kind"])
+			else:
+				_push_log("怪物一击打开了%s。" % furniture["kind"])
 	else:
 		furniture["damage"] = int(furniture["damage"]) + 1
 		var durability: int = int(furniture["durability"])
@@ -766,10 +1127,33 @@ func _apply_furniture_hit(role: String, action: Dictionary) -> void:
 			furniture["damage"] = durability
 			furniture["destroyed"] = true
 			furniture["opened"] = true
+			_trigger_furniture_alarm(room_coord, furniture)
 			var released := _release_furniture_contents(room, furniture)
-			_push_log("盗贼撞毁了%s，掉出 %d 件财物。" % [furniture["kind"], released])
+			_push_log("盗贼撞毁了%s，掉出 %d 件物品。" % [furniture["kind"], released])
 		else:
 			_push_log("%s损毁度 %d / %d。" % [furniture["kind"], furniture["damage"], durability])
+
+
+func _trigger_furniture_alarm(room_coord: Vector2i, furniture: Dictionary) -> bool:
+	var contents: Array = furniture["contents"]
+	for index in range(contents.size() - 1, -1, -1):
+		var content: Dictionary = contents[index]
+		if str(content.get("kind", "")) != "alarm":
+			continue
+		var owner := str(content.get("owner", "neutral"))
+		contents.remove_at(index)
+		_add_noise_at(
+			owner,
+			"家具警报",
+			room_coord,
+			furniture["pos"],
+			0.0,
+			5.0,
+			true,
+		)
+		_push_log("%s里的警报器被触发，全宅邸响起5秒警报！" % furniture["kind"])
+		return true
+	return false
 
 
 func _interact_furniture(role: String) -> void:
@@ -792,6 +1176,21 @@ func _furniture_in_front(role: String, require_open := false) -> Dictionary:
 		if offset.normalized().dot(facing) < FURNITURE_HIT_DOT:
 			continue
 		if distance < best_distance:
+			best = furniture
+			best_distance = distance
+	return best
+
+
+func _nearest_intact_furniture(role: String, max_distance := 1.25) -> Dictionary:
+	var actor := _get_actor(role)
+	var room := _room_at(actor["room"])
+	var best: Dictionary = {}
+	var best_distance := INF
+	for furniture in room["furniture"]:
+		if bool(furniture.get("destroyed", false)):
+			continue
+		var distance := (furniture["pos"] as Vector2).distance_to(actor["pos"])
+		if distance <= max_distance and distance < best_distance:
 			best = furniture
 			best_distance = distance
 	return best
@@ -827,6 +1226,23 @@ func _release_furniture_contents(room: Dictionary, furniture: Dictionary) -> int
 		item["collected"] = false
 		room["items"].append(item)
 	contents.clear()
+	return released
+
+
+func _release_furniture_tools(room: Dictionary, furniture: Dictionary) -> int:
+	var contents: Array = furniture["contents"]
+	var released := 0
+	for index in range(contents.size() - 1, -1, -1):
+		var content: Dictionary = contents[index]
+		if str(content.get("kind", "")) != "tool":
+			continue
+		var item := content.duplicate(true)
+		var angle := float(released) * 1.9 + 0.35
+		item["pos"] = (furniture["pos"] as Vector2) + Vector2.RIGHT.rotated(angle) * (0.34 + released * 0.06)
+		item["collected"] = false
+		room["items"].append(item)
+		contents.remove_at(index)
+		released += 1
 	return released
 
 
@@ -891,8 +1307,8 @@ func _place_treasure() -> void:
 			contents.remove_at(index)
 			_push_log("已从%s取出%s。" % [furniture["kind"], treasure["label"]])
 			return
-	if _furniture_has_treasure(furniture):
-		_push_log("%s只能存放一件藏品，请先取出原有藏品。" % furniture["kind"])
+	if _furniture_has_primary_content(furniture):
+		_push_log("%s的藏品槽已被占用，请先取出原有内容。" % furniture["kind"])
 		return
 	for room in rooms:
 		for other_furniture in room["furniture"]:
@@ -910,42 +1326,510 @@ func _place_treasure() -> void:
 	_push_log("已将%s存入%s（价值 %d）。" % [treasure["label"], furniture["kind"], treasure["value"]])
 
 
-func _thief_search() -> void:
-	if phase != "hunt":
+func _selected_tool(role: String) -> Dictionary:
+	var inventory: Array = tool_inventories[role]
+	if inventory.is_empty():
+		return {}
+	var index := clampi(int(tool_selected[role]), 0, inventory.size() - 1)
+	tool_selected[role] = index
+	return inventory[index]
+
+
+func _cycle_tool(role: String, direction: int) -> void:
+	var inventory: Array = tool_inventories[role]
+	if inventory.is_empty():
+		_push_log("%s没有携带道具。" % _role_name(role))
 		return
-	var room := _room_at(thief["room"])
+	tool_selected[role] = posmod(int(tool_selected[role]) + direction, inventory.size())
+	_push_log("%s选择了%s。" % [_role_name(role), _selected_tool(role)["label"]])
+
+
+func _consume_selected_tool(role: String) -> void:
+	var inventory: Array = tool_inventories[role]
+	if inventory.is_empty():
+		return
+	var index := clampi(int(tool_selected[role]), 0, inventory.size() - 1)
+	inventory.remove_at(index)
+	tool_selected[role] = clampi(index, 0, maxi(inventory.size() - 1, 0))
+
+
+func _pick_up_nearby(role: String) -> void:
+	if phase == "ended" or phase == "ready" or (phase == "hide" and role == "thief"):
+		return
+	if not _role_can_act(role):
+		return
+	var actor := _get_actor(role)
+	var room := _room_at(actor["room"])
+	var nearest: Dictionary = {}
+	var nearest_distance := INF
 	for item in room["items"]:
-		if not item["collected"] and (item["pos"] as Vector2).distance_to(thief["pos"]) <= 0.58:
-			item["collected"] = true
-			if item["kind"] == "treasure" or item["kind"] == "trinket":
-				loot_value += int(item["value"])
-				_push_log("盗贼携带%s，身上价值 %d。" % [item["label"], loot_value])
-			else:
-				pills += 1
-				_push_log("盗贼捡到一颗治疗药丸。")
-			_add_noise("thief", "拾取物品")
-			_reveal_thief()
+		if bool(item.get("collected", false)):
+			continue
+		var is_tool := str(item.get("kind", "")) == "tool"
+		var is_recovered_trap := (
+			str(item.get("kind", "")) == "device"
+			and str(item.get("device_type", "")) == "trap"
+			and str(item.get("state", "")) == "recoverable"
+		)
+		var is_loot := str(item.get("kind", "")) in ["treasure", "trinket", "pill"]
+		if role == "monster" and not (is_tool or is_recovered_trap):
+			continue
+		if role == "thief" and not (is_tool or is_recovered_trap or is_loot):
+			continue
+		if role == "monster" and str(item.get("tool_type", "")) == "teleporter":
+			continue
+		var distance := (item["pos"] as Vector2).distance_to(actor["pos"])
+		if distance <= 0.64 and distance < nearest_distance:
+			nearest = item
+			nearest_distance = distance
+	if nearest.is_empty():
+		_push_log("%s附近没有可拾取物品。" % _role_name(role))
+		return
+	var is_world_tool := str(nearest.get("kind", "")) == "tool"
+	var is_trap_tool := (
+		str(nearest.get("kind", "")) == "device"
+		and str(nearest.get("device_type", "")) == "trap"
+		and str(nearest.get("state", "")) == "recoverable"
+	)
+	if is_world_tool or is_trap_tool:
+		var inventory: Array = tool_inventories[role]
+		if inventory.size() >= TOOL_INVENTORY_CAPACITY:
+			_push_log("%s的3格道具栏已满。" % _role_name(role))
 			return
-	_push_log("附近没有可以拾取的物品。")
+		var tool_type := "trap" if is_trap_tool else str(nearest["tool_type"])
+		if role == "monster" and tool_type == "teleporter":
+			_push_log("传送器只能由盗贼使用。")
+			return
+		var carried := _make_tool_instance(tool_type, str(nearest["id"]))
+		if tool_type == "detector":
+			carried["charge"] = float(nearest.get("charge", DETECTOR_BATTERY_SECONDS))
+		inventory.append(carried)
+		tool_selected[role] = inventory.size() - 1
+		nearest["collected"] = true
+		_add_noise(role, "拾取道具")
+		if role == "thief":
+			_reveal_thief()
+		_push_log("%s拾取了%s（%d/3）。" % [_role_name(role), carried["label"], inventory.size()])
+		return
+	if role != "thief":
+		return
+	nearest["collected"] = true
+	if str(nearest["kind"]) in ["treasure", "trinket"]:
+		loot_value += int(nearest["value"])
+		_push_log("盗贼携带%s，身上价值 %d。" % [nearest["label"], loot_value])
+	else:
+		pills += 1
+		_push_log("盗贼捡到一颗治疗药丸。")
+	_add_noise("thief", "拾取物品")
+	_reveal_thief()
+
+
+func _thief_search() -> void:
+	_pick_up_nearby("thief")
+
+
+func _use_selected_tool(role: String) -> void:
+	if phase == "ended" or phase == "ready" or (phase == "hide" and role == "thief"):
+		return
+	if not _role_can_act(role):
+		return
+	if _activate_nearby_phonograph(role):
+		return
+	var tool := _selected_tool(role)
+	if tool.is_empty():
+		_push_log("%s没有可用道具。" % _role_name(role))
+		return
+	match str(tool["tool_type"]):
+		"detector": _toggle_detector(role, tool)
+		"alarm": _place_alarm(role)
+		"trap": _place_trap(role)
+		"adrenaline": _use_adrenaline(role)
+		"decoy": _use_decoy(role)
+		"phonograph": _place_phonograph(role)
+		"teleporter": _start_teleporter(role)
+		"spring_glove": _use_spring_glove(role)
+
+
+func _toggle_detector(role: String, tool: Dictionary) -> void:
+	if float(tool.get("charge", 0.0)) <= 0.0:
+		tool["active"] = false
+		_push_log("藏品探测器电量已经耗尽。")
+		return
+	tool["active"] = not bool(tool.get("active", false))
+	if bool(tool["active"]):
+		tool["next_noise"] = elapsed + DETECTOR_NOISE_INTERVAL
+		_push_log("%s开启探测器，本房间藏品信号开始显现。" % _role_name(role))
+	else:
+		_push_log("%s关闭探测器。" % _role_name(role))
+
+
+func _place_alarm(role: String) -> void:
+	var furniture := _nearest_intact_furniture(role)
+	if furniture.is_empty():
+		_push_log("必须靠近一件完好的家具才能安装警报器；本次未消耗道具。")
+		return
+	if _furniture_has_primary_content(furniture):
+		_push_log("%s的藏品槽已经被占用。" % furniture["kind"])
+		return
+	furniture["contents"].append({
+		"id": "alarm-%d" % next_device_id,
+		"kind": "alarm",
+		"label": "警报器",
+		"value": 0,
+		"signal_value": 3,
+		"owner": role,
+	})
+	next_device_id += 1
+	_consume_selected_tool(role)
+	_add_noise(role, "安装警报器")
+	if role == "thief":
+		_reveal_thief()
+	_push_log("%s把警报器藏进了%s。" % [_role_name(role), furniture["kind"]])
+
+
+func _device_position(role: String, forward_distance := 0.42) -> Vector2:
+	var actor := _get_actor(role)
+	var facing: Vector2 = actor.get("facing", _direction_vector(str(actor["dir"])))
+	var target: Vector2 = actor["pos"] + facing.normalized() * forward_distance
+	var room := _room_at(actor["room"])
+	if not _position_clears_room_walls(room, target):
+		return actor["pos"]
+	for furniture in room["furniture"]:
+		if not bool(furniture.get("destroyed", false)) and _actor_overlaps_furniture(target, furniture):
+			return actor["pos"]
+	return target
+
+
+func _spawn_device(role: String, device_type: String, position: Vector2) -> Dictionary:
+	var actor := _get_actor(role)
+	var device := {
+		"id": "device-%d" % next_device_id,
+		"kind": "device",
+		"device_type": device_type,
+		"label": TOOL_DEFS[device_type]["label"],
+		"value": 0,
+		"owner": role,
+		"pos": position,
+		"collected": false,
+		"created": elapsed,
+		"state": "active",
+	}
+	next_device_id += 1
+	_room_at(actor["room"])["items"].append(device)
+	return device
+
+
+func _place_trap(role: String) -> void:
+	var device := _spawn_device(role, "trap", _device_position(role, 0.5))
+	device["armed_at"] = elapsed + TRAP_ARM_DELAY
+	_consume_selected_tool(role)
+	_push_log("%s放置了捕兽夹，0.6秒后完成布置。" % _role_name(role))
+
+
+func _use_adrenaline(role: String) -> void:
+	var effects: Dictionary = status_effects[role]
+	if elapsed < float(effects["fatigue_until"]):
+		_push_log("%s仍受肾上腺素或疲劳影响。" % _role_name(role))
+		return
+	effects["adrenaline_until"] = elapsed + ADRENALINE_SECONDS
+	effects["fatigue_until"] = elapsed + ADRENALINE_SECONDS + FATIGUE_SECONDS
+	_consume_selected_tool(role)
+	_add_noise(role, "注射肾上腺素")
+	if role == "thief":
+		_reveal_thief()
+	_push_log("%s进入6秒双倍加速，随后疲劳3秒。" % _role_name(role))
+
+
+func _use_decoy(role: String) -> void:
+	var actor := _get_actor(role)
+	var decoy := _spawn_device(role, "decoy", actor["pos"])
+	decoy["expires"] = elapsed + DECOY_SECONDS
+	decoy["character_role"] = role
+	_consume_selected_tool(role)
+	var facing: Vector2 = actor.get("facing", _direction_vector(str(actor["dir"])))
+	_displace_actor(role, facing.normalized() * DECOY_DASH_DISTANCE)
+	_add_noise(role, "替身位移")
+	if role == "thief":
+		_reveal_thief()
+	_push_log("%s留下替身并向前位移。" % _role_name(role))
+
+
+func _place_phonograph(role: String) -> void:
+	var device := _spawn_device(role, "phonograph", _device_position(role, 0.45))
+	device["state"] = "idle"
+	_consume_selected_tool(role)
+	_push_log("%s放置了留声机；靠近后再按使用键启动。" % _role_name(role))
+
+
+func _activate_nearby_phonograph(role: String) -> bool:
+	var actor := _get_actor(role)
+	var room := _room_at(actor["room"])
+	for item in room["items"]:
+		if (
+			bool(item.get("collected", false))
+			or str(item.get("device_type", "")) != "phonograph"
+			or str(item.get("state", "")) != "idle"
+			or str(item.get("owner", "")) != role
+		):
+			continue
+		if (item["pos"] as Vector2).distance_to(actor["pos"]) > 0.9:
+			continue
+		item["state"] = "playing"
+		item["starts_at"] = elapsed + PHONOGRAPH_DELAY
+		item["expires"] = elapsed + PHONOGRAPH_DELAY + PHONOGRAPH_SECONDS
+		item["next_noise"] = elapsed + PHONOGRAPH_DELAY
+		_push_log("%s启动留声机，2秒后开始播放10秒撞击声。" % _role_name(role))
+		return true
+	return false
+
+
+func _start_teleporter(role: String) -> void:
+	if role != "thief":
+		_push_log("传送器只能由盗贼启动。")
+		return
+	if phase != "hunt" or has_extracted:
+		return
+	var effects: Dictionary = status_effects[role]
+	if float(effects["teleport_ends"]) > elapsed:
+		_push_log("传送器已经在轰鸣充能。")
+		return
+	effects["teleport_started"] = elapsed
+	effects["teleport_ends"] = elapsed + TELEPORT_CHANNEL_SECONDS
+	_consume_selected_tool(role)
+	_add_noise(role, "传送器轰鸣", {}, 0.0, TELEPORT_CHANNEL_SECONDS, true)
+	_reveal_thief()
+	_push_log("传送器开始持续轰鸣，5秒后携带全部财物撤离。")
+
+
+func _use_spring_glove(role: String) -> void:
+	var actor := _get_actor(role)
+	var target_role := "thief" if role == "monster" else "monster"
+	var target := _get_actor(target_role)
+	var facing: Vector2 = actor.get("facing", _direction_vector(str(actor["dir"])))
+	var vector: Vector2 = target["pos"] - actor["pos"]
+	var hit_actor: bool = (
+		actor["room"] == target["room"]
+		and vector.length() <= SPRING_GLOVE_REACH
+		and (vector.is_zero_approx() or vector.normalized().dot(facing) >= 0.5)
+	)
+	_consume_selected_tool(role)
+	_add_noise(role, "弹簧拳套")
+	if hit_actor:
+		status_effects[target_role]["stunned_until"] = elapsed + SPRING_GLOVE_STUN_SECONDS
+		_cancel_teleporter(target_role, "被弹簧拳套击中")
+		_displace_actor(target_role, facing.normalized() * SPRING_GLOVE_KNOCKBACK)
+		if target_role == "thief":
+			_reveal_thief()
+		_push_log("%s被击退并眩晕1秒！" % _role_name(target_role))
+	elif _destroy_device_in_front(role, ["decoy", "phonograph"]):
+		_push_log("弹簧拳套击碎了前方装置。")
+	else:
+		_push_log("%s的弹簧拳套落空并损毁。" % _role_name(role))
+
+
+func _displace_actor(role: String, displacement: Vector2) -> void:
+	if displacement.is_zero_approx():
+		return
+	var actor := _get_actor(role)
+	dragging[role] = ""
+	drag_mode[role] = "move"
+	var old_facing: Vector2 = actor.get("facing", Vector2.RIGHT)
+	var old_dir := str(actor["dir"])
+	var subdivisions := maxi(1, int(ceil(displacement.length() / 0.05)))
+	var step := displacement / float(subdivisions)
+	for _index in range(subdivisions):
+		if not is_zero_approx(step.x):
+			_move_actor_axis(role, Vector2(step.x, 0))
+		if not is_zero_approx(step.y):
+			_move_actor_axis(role, Vector2(0, step.y))
+	actor["facing"] = old_facing
+	actor["dir"] = old_dir
+
+
+func _handle_trap_escape_input(role: String, key: Key, physical: Key) -> bool:
+	if str(trapped_by.get(role, "")) == "":
+		return false
+	var pressed_left := physical == KEY_A if role == "monster" else key == KEY_LEFT
+	var pressed_right := physical == KEY_D if role == "monster" else key == KEY_RIGHT
+	if not pressed_left and not pressed_right:
+		return false
+	var expects_left: bool = bool(trap_expected_left[role])
+	if (expects_left and pressed_left) or (not expects_left and pressed_right):
+		trap_escape_progress[role] = int(trap_escape_progress[role]) + 1
+		trap_expected_left[role] = not expects_left
+		_add_noise(role, "捕兽夹挣扎", {}, 0.12, 2.0, true)
+		if int(trap_escape_progress[role]) >= TRAP_ESCAPE_PRESSES:
+			_escape_trap(role)
+	return true
+
+
+func _escape_trap(role: String) -> void:
+	var device_id := str(trapped_by[role])
+	for room in rooms:
+		for item in room["items"]:
+			if str(item.get("id", "")) != device_id:
+				continue
+			item["state"] = "recoverable"
+			item["tool_type"] = "trap"
+			item["label"] = TOOL_DEFS["trap"]["label"]
+			break
+	trapped_by[role] = ""
+	trap_escape_progress[role] = 0
+	trap_expected_left[role] = true
+	_push_log("%s挣脱捕兽夹，夹子现在可以被任意一方拾取。" % _role_name(role))
+
+
+func _cancel_teleporter(role: String, reason: String) -> void:
+	var effects: Dictionary = status_effects.get(role, {})
+	if float(effects.get("teleport_ends", -1.0)) <= elapsed:
+		return
+	effects["teleport_started"] = -1.0
+	effects["teleport_ends"] = -1.0
+	_push_log("%s，%s的传送被打断。" % [reason, _role_name(role)])
+
+
+func _update_tool_states(delta: float) -> void:
+	for room in rooms:
+		for furniture in room["furniture"]:
+			furniture["detector_active"] = false
+	for role in ["monster", "thief"]:
+		var inventory: Array = tool_inventories[role]
+		for tool in inventory:
+			if str(tool.get("tool_type", "")) != "detector" or not bool(tool.get("active", false)):
+				continue
+			var charge := maxf(float(tool.get("charge", 0.0)) - delta, 0.0)
+			tool["charge"] = charge
+			if charge <= 0.0:
+				tool["active"] = false
+				_push_log("%s的藏品探测器电量耗尽。" % _role_name(role))
+				continue
+			var actor := _get_actor(role)
+			for furniture in _room_at(actor["room"])["furniture"]:
+				furniture["detector_active"] = true
+			if elapsed >= float(tool.get("next_noise", 0.0)):
+				tool["next_noise"] = elapsed + DETECTOR_NOISE_INTERVAL
+				_add_noise(role, "探测器脉冲", {}, 0.0, 2.0, true)
+		var effects: Dictionary = status_effects[role]
+		var teleport_ends := float(effects.get("teleport_ends", -1.0))
+		if teleport_ends > 0.0 and elapsed >= teleport_ends:
+			effects["teleport_started"] = -1.0
+			effects["teleport_ends"] = -1.0
+			if role == "thief" and phase == "hunt" and not has_extracted:
+				_complete_extraction("传送器")
+
+
+func _update_devices() -> void:
+	for room in rooms:
+		for item in room["items"]:
+			if bool(item.get("collected", false)) or str(item.get("kind", "")) != "device":
+				continue
+			match str(item.get("device_type", "")):
+				"trap":
+					var trap_state := str(item.get("state", ""))
+					if trap_state == "sprung":
+						if elapsed >= float(item.get("next_noise", 0.0)):
+							item["next_noise"] = elapsed + 1.0
+							_add_noise_at(
+								str(item.get("trapped_role", item.get("owner", "neutral"))),
+								"捕兽夹持续响动",
+								room["coord"],
+								item["pos"],
+								0.0,
+								2.0,
+								true,
+							)
+						continue
+					if trap_state != "active" or elapsed < float(item.get("armed_at", INF)):
+						continue
+					for role in ["monster", "thief"]:
+						if str(trapped_by[role]) != "":
+							continue
+						var actor := _get_actor(role)
+						if actor["room"] != room["coord"]:
+							continue
+						if (actor["pos"] as Vector2).distance_to(item["pos"]) <= TRAP_TRIGGER_RADIUS:
+							item["state"] = "sprung"
+							item["trapped_role"] = role
+							item["next_noise"] = elapsed + 1.0
+							trapped_by[role] = str(item["id"])
+							trap_escape_progress[role] = 0
+							trap_expected_left[role] = true
+							_cancel_teleporter(role, "踩中捕兽夹")
+							_add_noise_at(role, "捕兽夹触发", room["coord"], item["pos"], 0.0, 3.0, true)
+							_push_log("%s踩中捕兽夹，左右键交替20次才能挣脱！" % _role_name(role))
+							break
+				"decoy":
+					if elapsed >= float(item.get("expires", INF)):
+						item["collected"] = true
+				"phonograph":
+					if str(item.get("state", "")) == "idle":
+						continue
+					if elapsed >= float(item.get("expires", INF)):
+						item["collected"] = true
+						_push_log("留声机播放完毕并自动粉碎。")
+					elif elapsed >= float(item.get("starts_at", INF)) and elapsed >= float(item.get("next_noise", INF)):
+						item["next_noise"] = elapsed + 0.9
+						_add_noise_at(
+							str(item.get("owner", "neutral")),
+							"留声机撞击",
+							room["coord"],
+							item["pos"],
+							0.0,
+							2.0,
+							true,
+						)
+
+
+func _destroy_device_in_front(role: String, types: Array) -> bool:
+	var actor := _get_actor(role)
+	var room := _room_at(actor["room"])
+	var facing: Vector2 = actor.get("facing", _direction_vector(str(actor["dir"])))
+	var best: Dictionary = {}
+	var best_distance := INF
+	for item in room["items"]:
+		if bool(item.get("collected", false)) or str(item.get("kind", "")) != "device":
+			continue
+		if not types.has(str(item.get("device_type", ""))):
+			continue
+		if str(item.get("owner", "")) == role:
+			continue
+		var offset: Vector2 = item["pos"] - actor["pos"]
+		var distance := offset.length()
+		if distance > SPRING_GLOVE_REACH or distance >= best_distance:
+			continue
+		if not offset.is_zero_approx() and offset.normalized().dot(facing) < 0.5:
+			continue
+		best = item
+		best_distance = distance
+	if best.is_empty():
+		return false
+	best["collected"] = true
+	return true
 
 
 func _thief_exit() -> void:
 	if phase != "hunt" or has_extracted:
 		return
 	if thief["room"] == ENTRANCE_ROOM and (thief["pos"] as Vector2).distance_to(ENTRANCE_POS) <= 0.58:
-		has_extracted = true
-		extracted_value = loot_value
-		phase = "ended"
-		if extracted_value >= 5:
-			outcome = "盗贼完成本局唯一一次撤离，带出价值 %d 的财物。" % extracted_value
-		else:
-			outcome = "盗贼已撤离，但带出价值只有 %d，行动失败。" % extracted_value
+		_complete_extraction("入口")
 	else:
 		_push_log("只有回到入口处才能撤离。")
 
 
+func _complete_extraction(method: String) -> void:
+	if has_extracted:
+		return
+	has_extracted = true
+	extracted_value = loot_value
+	phase = "ended"
+	if extracted_value >= 5:
+		outcome = "盗贼通过%s完成本局唯一一次撤离，带出价值 %d 的财物。" % [method, extracted_value]
+	else:
+		outcome = "盗贼通过%s撤离，但带出价值只有 %d，行动失败。" % [method, extracted_value]
+
+
 func _use_pill() -> void:
-	if phase != "hunt" or pills <= 0 or int(thief["hp"]) >= 2:
+	if phase != "hunt" or pills <= 0 or int(thief["hp"]) >= 2 or not _role_can_act("thief"):
 		return
 	thief["hp"] += 1
 	pills -= 1
@@ -955,7 +1839,7 @@ func _use_pill() -> void:
 
 
 func _attack() -> void:
-	if phase != "hunt" or elapsed < attack_until:
+	if phase != "hunt" or elapsed < attack_until or not _role_can_act("monster"):
 		return
 	attack_until = elapsed + 0.7
 	_add_noise("monster", "挥砍")
@@ -966,6 +1850,7 @@ func _attack() -> void:
 	var dot := 1.0 if distance == 0.0 else vector.normalized().dot(facing)
 	if same_room and distance <= 2.35 and dot >= cos(PI / 4.0):
 		thief["hp"] -= 1
+		_cancel_teleporter("thief", "受到怪物攻击")
 		_reveal_thief()
 		if thief["hp"] <= 0:
 			phase = "ended"
@@ -973,7 +1858,10 @@ func _attack() -> void:
 		else:
 			_push_log("挥砍命中！盗贼失去 1 滴血。")
 	else:
-		_push_log("怪物挥砍落空。")
+		if _destroy_device_in_front("monster", ["decoy", "phonograph"]):
+			_push_log("怪物击碎了前方的装置。")
+		else:
+			_push_log("怪物挥砍落空。")
 
 
 func _direction_vector(dir: String) -> Vector2:
@@ -1001,7 +1889,7 @@ func _calculate_layout(size: Vector2) -> Dictionary:
 	var gap := 10.0
 	var side_width := (size.x - margin * 2.0 - gap) / 2.0
 	var panel_height := size.y - margin * 2.0
-	var room_side := minf(side_width - 18.0, panel_height - 136.0)
+	var room_side := minf(side_width - 18.0, panel_height - 105.0)
 	room_side = maxf(room_side, 280.0)
 	var left_panel := Rect2(margin, margin, side_width, panel_height)
 	var right_panel := Rect2(left_panel.end.x + gap, margin, side_width, panel_height)
@@ -1057,17 +1945,63 @@ func _draw_room_panel(panel: Rect2, room_rect: Rect2, role: String) -> void:
 	if role == "monster":
 		_draw_storage_exchange(room_rect)
 	_draw_view_minimap(room_rect, role)
+	_draw_role_status(room_rect, role)
 	if bool(help_open[role]):
 		_draw_help_overlay(room_rect, role)
 	var footer := Rect2(panel.position.x, room_rect.end.y + 10, panel.size.x, panel.end.y - room_rect.end.y - 10)
 	draw_rect(footer, PANEL_ALT)
 	draw_line(footer.position, Vector2(footer.end.x, footer.position.y), LINE_COLOR, 1)
-	var controls := ""
-	if role == "monster":
-		controls = "WASD 移动  G 撞击  空格 攻击  Q/E 视角  Tab 地图  F1 帮助\nH 结束藏宝  |  家具面板：W/S 选择  R 存取  Esc 关闭"
+	_draw_toolbelt(footer, role)
+
+
+func _draw_toolbelt(footer: Rect2, role: String) -> void:
+	var inventory: Array = tool_inventories[role]
+	var accent := MONSTER_COLOR if role == "monster" else THIEF_COLOR
+	var start := footer.position + Vector2(12, 5)
+	var gap := 6.0
+	var slot_width := (footer.size.x - 24.0 - gap * 2.0) / 3.0
+	for index in range(TOOL_INVENTORY_CAPACITY):
+		var slot := Rect2(start + Vector2(index * (slot_width + gap), 0), Vector2(slot_width, 36))
+		draw_rect(slot, Color("#20231f"))
+		draw_rect(slot, accent if index == int(tool_selected[role]) and index < inventory.size() else LINE_COLOR, false, 1.5)
+		if index >= inventory.size():
+			_text_center("%d · 空" % [index + 1], slot, 9, MUTED_COLOR)
+			continue
+		var tool: Dictionary = inventory[index]
+		var label := str(TOOL_DEFS[str(tool["tool_type"])]["short"])
+		var status := ""
+		if str(tool["tool_type"]) == "detector":
+			status = " ON" if bool(tool.get("active", false)) else " %.0fs" % float(tool.get("charge", 0.0))
+		_text_center("%d · %s%s" % [index + 1, label, status], slot, 9, TEXT_COLOR)
+
+
+func _draw_role_status(room_rect: Rect2, role: String) -> void:
+	var message := ""
+	var color := GOLD_COLOR
+	if str(trapped_by.get(role, "")) != "":
+		var key_hint := "A/D" if role == "monster" else "←/→"
+		message = "被捕！%s交替按压 %d / %d" % [key_hint, trap_escape_progress[role], TRAP_ESCAPE_PRESSES]
+		color = MONSTER_COLOR
 	else:
-		controls = "方向键 移动  Num0 撞击  Num1 拾取  Num2 药丸  Num5 撤离\nNum7/9 视角  按住 Num8 地图  Num+ 帮助"
-	_multiline(controls, footer.position + Vector2(12, 22), footer.size.x - 24, 11, MUTED_COLOR, 19)
+		var effects: Dictionary = status_effects[role]
+		if elapsed < float(effects.get("stunned_until", 0.0)):
+			message = "眩晕 %.1f秒" % (float(effects["stunned_until"]) - elapsed)
+		elif elapsed < float(effects.get("adrenaline_until", 0.0)):
+			message = "肾上腺素 2× · %.1f秒" % (float(effects["adrenaline_until"]) - elapsed)
+		elif elapsed < float(effects.get("fatigue_until", 0.0)):
+			message = "疲劳 0.5× · %.1f秒" % (float(effects["fatigue_until"]) - elapsed)
+		elif float(effects.get("teleport_ends", -1.0)) > elapsed:
+			message = "传送器轰鸣 · %.1f秒" % (float(effects["teleport_ends"]) - elapsed)
+			color = Color("#68c8ff")
+	if message == "":
+		return
+	var status_rect := Rect2(
+		Vector2(room_rect.get_center().x - 150, room_rect.position.y + 14),
+		Vector2(300, 32),
+	)
+	draw_rect(status_rect, Color(0.04, 0.045, 0.04, 0.92))
+	draw_rect(status_rect, color, false, 2.0)
+	_text_center(message, status_rect, 12, color)
 
 
 func _phase_short_label() -> String:
@@ -1106,10 +2040,35 @@ func _draw_help_overlay(room_rect: Rect2, role: String) -> void:
 		"· 怪物一击打开家具；盗贼必须撞到耐久归零。\n\n"
 		+ "· 每件家具最多存一件正式藏品，并有 50% 概率藏有小玩意儿。\n\n"
 		+ "· 财物只有从入口撤离后才结算，每局只能撤离一次。\n\n"
-		+ "· 高价值家具晃动更明显；撞击和操作会制造噪音。\n\n"
-		+ "· 双方视角、移动键、地图与帮助界面彼此独立。"
+		+ "· 真实藏品不会自行晃动；探测器开启后才按价值显示信号。\n\n"
+		+ "· 每人最多携带3件道具；部分道具藏在家具内部。\n\n"
+		+ "· 警报器只能靠近完好家具安装；全图噪音会暴露方向。\n\n"
+		+ "· 捕兽夹需左右键严格交替20次挣脱；传送器轰鸣5秒后撤离。"
 	)
-	_multiline(rules, card.position + Vector2(34, 78), card.size.x - 68, 12, MUTED_COLOR, 21)
+	_multiline(rules, card.position + Vector2(34, 78), card.size.x - 68, 11, MUTED_COLOR, 19)
+	var controls := ""
+	if role == "monster":
+		controls = (
+			"WASD 移动　G 撞击　空格 攻击　R 拾取\n"
+			+ "Z/X 选择道具　F 使用　Q/E 转动视角　Tab 地图\n"
+			+ "H 结束藏宝　家具面板：W/S 选择　R 存取　Esc 关闭"
+		)
+	else:
+		controls = (
+			"方向键 移动　Num0 撞击　Num1 拾取　Num2 药丸\n"
+			+ "Num4/6 选择道具　Num3 使用　Num5 撤离\n"
+			+ "Num7/9 转动视角　按住 Num8 地图　Num+ 帮助"
+		)
+	var controls_title_y := minf(card.position.y + 354.0, card.end.y - 132.0)
+	_text("完整键位", Vector2(card.position.x + 34, controls_title_y), 13, accent)
+	_multiline(
+		controls,
+		Vector2(card.position.x + 34, controls_title_y + 28),
+		card.size.x - 68,
+		11,
+		TEXT_COLOR,
+		20,
+	)
 	var close_label := "F1 / Esc 关闭" if role == "monster" else "Num+ / Esc 关闭"
 	_text_center(close_label, Rect2(Vector2(card.position.x, card.end.y - 48), Vector2(card.size.x, 25)), 11, accent)
 
@@ -1157,6 +2116,10 @@ func _draw_storage_exchange(room_rect: Rect2) -> void:
 	for content in furniture["contents"]:
 		if content["kind"] == "treasure":
 			stored_treasure = "%s · 价值 %d" % [content["label"], content["value"]]
+		elif content["kind"] == "alarm":
+			stored_treasure = "警报器 · 假藏品信号"
+		elif content["kind"] == "tool":
+			trinket_names.append("道具：%s" % content["label"])
 		elif content["kind"] == "trinket":
 			trinket_names.append("%s · %d" % [content["label"], content["value"]])
 	_text("藏品槽（限 1 件）", right.position + Vector2(10, 43), 9, MUTED_COLOR)
@@ -1293,12 +2256,26 @@ func _draw_noise_directions(rect: Rect2, role: String, actor: Dictionary) -> voi
 		if noise["source"] == role:
 			continue
 		var room_distance: int = abs(noise["room"].x - actor["room"].x) + abs(noise["room"].y - actor["room"].y)
-		if room_distance >= 3:
+		if room_distance >= 3 and not bool(noise.get("global", false)):
 			continue
 		var source_global: Vector2 = Vector2(noise["room"]) * ROOM_SIZE + (noise["pos"] as Vector2)
 		var angle: float = actor_global.angle_to_point(source_global)
-		var color: Color = MONSTER_COLOR if noise["source"] == "monster" else THIEF_COLOR
-		var fade: float = clampf((float(noise["expires"]) - elapsed) / 2.0, 0.0, 1.0)
+		if world_25d:
+			var source_normalized: Vector2 = world_25d.project_normalized(
+				role,
+				noise["room"],
+				noise["pos"],
+				0.55,
+			)
+			var source_screen := rect.position + source_normalized * rect.size
+			angle = origin.angle_to_point(source_screen)
+		var color: Color = (
+			MONSTER_COLOR if noise["source"] == "monster"
+			else THIEF_COLOR if noise["source"] == "thief"
+			else GOLD_COLOR
+		)
+		var duration := maxf(float(noise.get("duration", 2.0)), 0.01)
+		var fade: float = clampf((float(noise["expires"]) - elapsed) / duration, 0.0, 1.0)
 		for radius in [25.0, 42.0, 59.0]:
 			draw_arc(origin, radius, angle - 0.58, angle + 0.58, 12, Color(color, fade), 2)
 
@@ -1367,6 +2344,28 @@ func _draw_minimap(rect: Rect2, role: String) -> void:
 			var marker_center := _rotate_minimap_point(cell_rect.get_center(), center, angle)
 			draw_circle(marker_center, maxf(cell * 0.18, 3.5), accent)
 			draw_circle(marker_center, maxf(cell * 0.18, 3.5), Color("#111311"), false, 1.0)
+	var opponent_role := "thief" if role == "monster" else "monster"
+	var opponent := _get_actor(opponent_role)
+	var opponent_coord: Vector2i = opponent["room"]
+	var opponent_center := grid_rect.position + Vector2(opponent_coord.x, opponent_coord.y) * (cell + gap) + Vector2.ONE * cell * 0.5
+	opponent_center = _rotate_minimap_point(opponent_center, center, angle)
+	var opponent_color := THIEF_COLOR if opponent_role == "thief" else MONSTER_COLOR
+	draw_circle(opponent_center + Vector2(2, -2), maxf(cell * 0.14, 3.0), opponent_color)
+	draw_circle(opponent_center + Vector2(2, -2), maxf(cell * 0.14, 3.0), Color("#111311"), false, 1.0)
+	for room in rooms:
+		for item in room["items"]:
+			if (
+				bool(item.get("collected", false))
+				or str(item.get("device_type", "")) != "decoy"
+				or str(item.get("owner", "")) == role
+			):
+				continue
+			var decoy_coord: Vector2i = room["coord"]
+			var decoy_center := grid_rect.position + Vector2(decoy_coord.x, decoy_coord.y) * (cell + gap) + Vector2.ONE * cell * 0.5
+			decoy_center = _rotate_minimap_point(decoy_center, center, angle)
+			var decoy_color := THIEF_COLOR if str(item.get("owner", "")) == "thief" else MONSTER_COLOR
+			draw_circle(decoy_center + Vector2(2, -2), maxf(cell * 0.14, 3.0), decoy_color)
+			draw_circle(decoy_center + Vector2(2, -2), maxf(cell * 0.14, 3.0), Color("#111311"), false, 1.0)
 
 
 func _draw_countdown_overlay(size: Vector2) -> void:
