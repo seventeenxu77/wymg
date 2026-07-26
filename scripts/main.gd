@@ -2,8 +2,12 @@
 extends "res://scripts/systems/tool_system.gd"
 
 const GAME_HUD_SCRIPT := preload("res://scripts/presentation/game_hud.gd")
+const TUTORIAL_SYSTEM_SCRIPT := preload("res://scripts/tutorial/tutorial_system.gd")
+const TUTORIAL_HUD_SCRIPT := preload("res://scripts/tutorial/tutorial_hud.gd")
 
 var hud: Node2D
+var tutorial_system: Node
+var tutorial_hud: Node2D
 
 func _ready() -> void:
 	rng.randomize()
@@ -18,10 +22,40 @@ func _ready() -> void:
 	hud.name = "GameHud"
 	add_child(hud)
 	hud.setup(self)
+	tutorial_system = TUTORIAL_SYSTEM_SCRIPT.new()
+	tutorial_system.name = "TutorialSystem"
+	add_child(tutorial_system)
+	tutorial_system.setup(self)
+	tutorial_system.all_players_ready.connect(_on_tutorial_players_ready)
+	tutorial_hud = TUTORIAL_HUD_SCRIPT.new()
+	tutorial_hud.name = "TutorialHud"
+	add_child(tutorial_hud)
+	tutorial_hud.setup(self, tutorial_system)
 	new_game()
+	_initialize_main_menu()
 	set_process(true)
 	set_physics_process(true)
 	set_process_input(true)
+
+
+func _initialize_main_menu() -> void:
+	var master_bus := AudioServer.get_bus_index("Master")
+	if master_bus >= 0:
+		var linear_volume := db_to_linear(AudioServer.get_bus_volume_db(master_bus))
+		main_menu_volume_step = clampi(roundi(linear_volume * 10.0), 0, 10)
+	_open_main_menu()
+
+
+func _open_main_menu() -> void:
+	if tutorial_system and tutorial_system.active:
+		tutorial_system.close()
+	main_menu_open = true
+	main_menu_panel = "root"
+	main_menu_selected = 0
+	main_menu_rects.clear()
+	for audio_player in walk_players.values():
+		if is_instance_valid(audio_player):
+			(audio_player as AudioStreamPlayer).stop()
 
 
 func new_game() -> void:
@@ -112,11 +146,15 @@ func _process(_delta: float) -> void:
 func _physics_process(delta: float) -> void:
 	if Engine.is_editor_hint():
 		return
+	if bool(main_menu_open):
+		return
+	if tutorial_system and tutorial_system.active:
+		return
 	elapsed += delta
 	_update_phase(delta)
 	_update_temporary_events()
 	_update_tool_states(delta)
-	_update_devices()
+	_update_devices(delta)
 	_update_furniture_hit_actions(delta)
 	_update_storage_panel()
 	if phase == "hunt":
@@ -129,9 +167,25 @@ func _physics_process(delta: float) -> void:
 		monster["moving"] = false
 		thief["moving"] = false
 		_handle_continuous_input(delta)
+	_update_thief_stealth()
 	_update_walk_audio()
 	if world_25d:
 		world_25d.sync(rooms, monster, thief, afterimages, dragging, elapsed < attack_until, elapsed)
+
+
+func _update_thief_stealth() -> void:
+	if thief.is_empty():
+		return
+	if phase != "hunt" or has_extracted:
+		thief["hidden_from_monster"] = false
+		return
+	if bool(thief.get("moving", false)):
+		thief["last_moved_at"] = elapsed
+		thief["hidden_from_monster"] = false
+		return
+	# Stealth is a direct movement state: releasing all movement keys hides the
+	# thief on that same physics tick, regardless of a previous reveal event.
+	thief["hidden_from_monster"] = true
 
 
 func _update_phase(delta: float) -> void:
@@ -200,6 +254,14 @@ func _input(event: InputEvent) -> void:
 		if event is InputEventKey and event.pressed:
 			_handle_gm_console_key(event)
 		get_viewport().set_input_as_handled()
+		return
+	if bool(main_menu_open):
+		_handle_main_menu_input(event)
+		get_viewport().set_input_as_handled()
+		return
+	if tutorial_system and tutorial_system.active:
+		if tutorial_system.handle_input(event):
+			get_viewport().set_input_as_handled()
 		return
 	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT and event.pressed:
 		for role in ["monster", "thief"]:
@@ -302,6 +364,159 @@ func _input(event: InputEvent) -> void:
 			world_25d.rotate_camera(right_role, 1)
 
 
+func _handle_main_menu_input(event: InputEvent) -> void:
+	if event is InputEventMouseMotion:
+		var hovered_action := _main_menu_action_at(event.position)
+		if hovered_action != "":
+			_select_main_menu_action(hovered_action)
+		return
+	if (
+		event is InputEventMouseButton
+		and event.button_index == MOUSE_BUTTON_LEFT
+		and event.pressed
+	):
+		var clicked_action := _main_menu_action_at(event.position)
+		if clicked_action != "":
+			_activate_main_menu_action(clicked_action)
+		return
+	if not (event is InputEventKey) or not event.pressed or event.echo:
+		return
+	var key: Key = event.keycode
+	var physical: Key = event.physical_keycode
+	if key == KEY_ESCAPE:
+		if main_menu_panel == "settings" or main_menu_panel == "exit_confirm":
+			main_menu_panel = "root"
+			main_menu_selected = 0
+			main_menu_rects.clear()
+		return
+	match str(main_menu_panel):
+		"settings":
+			_handle_main_menu_settings_key(key, physical)
+		"exit_confirm":
+			if key == KEY_LEFT or physical == KEY_A:
+				main_menu_selected = 0
+			elif key == KEY_RIGHT or physical == KEY_D:
+				main_menu_selected = 1
+			elif key in [KEY_ENTER, KEY_KP_ENTER, KEY_SPACE]:
+				_activate_main_menu_action(
+					"exit_cancel" if int(main_menu_selected) == 0 else "exit_confirm"
+				)
+		_:
+			if key == KEY_LEFT or physical == KEY_A:
+				main_menu_selected = posmod(int(main_menu_selected) - 1, 4)
+			elif key == KEY_RIGHT or physical == KEY_D:
+				main_menu_selected = posmod(int(main_menu_selected) + 1, 4)
+			elif key in [KEY_ENTER, KEY_KP_ENTER, KEY_SPACE]:
+				var actions := ["start", "settings", "tutorial", "exit"]
+				_activate_main_menu_action(actions[int(main_menu_selected)])
+
+
+func _handle_main_menu_settings_key(key: Key, physical: Key) -> void:
+	if key == KEY_UP or physical == KEY_W:
+		main_menu_selected = posmod(int(main_menu_selected) - 1, 3)
+	elif key == KEY_DOWN or physical == KEY_S:
+		main_menu_selected = posmod(int(main_menu_selected) + 1, 3)
+	elif key == KEY_LEFT or physical == KEY_A:
+		if int(main_menu_selected) == 0:
+			_adjust_main_menu_volume(-1)
+	elif key == KEY_RIGHT or physical == KEY_D:
+		if int(main_menu_selected) == 0:
+			_adjust_main_menu_volume(1)
+	elif key in [KEY_ENTER, KEY_KP_ENTER, KEY_SPACE]:
+		match int(main_menu_selected):
+			0:
+				_adjust_main_menu_volume(1)
+			1:
+				_toggle_main_menu_fullscreen()
+			_:
+				_activate_main_menu_action("settings_back")
+
+
+func _main_menu_action_at(position: Vector2) -> String:
+	for action in main_menu_rects:
+		if (main_menu_rects[action] as Rect2).has_point(position):
+			return str(action)
+	return ""
+
+
+func _select_main_menu_action(action: String) -> void:
+	match str(main_menu_panel):
+		"settings":
+			if action in ["volume_down", "volume_up"]:
+				main_menu_selected = 0
+			elif action == "fullscreen":
+				main_menu_selected = 1
+			elif action == "settings_back":
+				main_menu_selected = 2
+		"exit_confirm":
+			main_menu_selected = 0 if action == "exit_cancel" else 1
+		_:
+			var actions := ["start", "settings", "tutorial", "exit"]
+			var index := actions.find(action)
+			if index >= 0:
+				main_menu_selected = index
+
+
+func _activate_main_menu_action(action: String) -> void:
+	match action:
+		"start":
+			main_menu_open = false
+			main_menu_panel = "root"
+			main_menu_rects.clear()
+			new_game()
+		"settings":
+			main_menu_panel = "settings"
+			main_menu_selected = 0
+			main_menu_rects.clear()
+		"tutorial":
+			main_menu_open = false
+			main_menu_panel = "root"
+			main_menu_rects.clear()
+			_open_tutorial_mode()
+		"exit":
+			main_menu_panel = "exit_confirm"
+			main_menu_selected = 0
+			main_menu_rects.clear()
+		"volume_down":
+			_adjust_main_menu_volume(-1)
+		"volume_up":
+			_adjust_main_menu_volume(1)
+		"fullscreen":
+			_toggle_main_menu_fullscreen()
+		"settings_back", "exit_cancel":
+			main_menu_panel = "root"
+			main_menu_selected = 0
+			main_menu_rects.clear()
+		"exit_confirm":
+			get_tree().quit()
+
+
+func _adjust_main_menu_volume(direction: int) -> void:
+	main_menu_volume_step = clampi(int(main_menu_volume_step) + direction, 0, 10)
+	var master_bus := AudioServer.get_bus_index("Master")
+	if master_bus < 0:
+		return
+	AudioServer.set_bus_mute(master_bus, int(main_menu_volume_step) == 0)
+	if int(main_menu_volume_step) > 0:
+		AudioServer.set_bus_volume_db(
+			master_bus,
+			linear_to_db(float(main_menu_volume_step) / 10.0),
+		)
+
+
+func _toggle_main_menu_fullscreen() -> void:
+	var mode := DisplayServer.window_get_mode()
+	var fullscreen := mode in [
+		DisplayServer.WINDOW_MODE_FULLSCREEN,
+		DisplayServer.WINDOW_MODE_EXCLUSIVE_FULLSCREEN,
+	]
+	DisplayServer.window_set_mode(
+		DisplayServer.WINDOW_MODE_WINDOWED
+		if fullscreen
+		else DisplayServer.WINDOW_MODE_FULLSCREEN
+	)
+
+
 func _is_gm_console_toggle(event: InputEventKey) -> bool:
 	return (
 		event.physical_keycode == KEY_QUOTELEFT
@@ -379,6 +594,26 @@ func _handle_storage_panel_input(key: Key, physical: Key) -> bool:
 		_place_treasure()
 		return true
 	return false
+
+
+func _open_tutorial_mode() -> void:
+	main_menu_open = false
+	main_menu_panel = "root"
+	main_menu_rects.clear()
+	if tutorial_system:
+		tutorial_system.open()
+
+
+func _close_tutorial_mode(start_fresh_game := true) -> void:
+	if tutorial_system:
+		tutorial_system.close()
+	if start_fresh_game:
+		main_menu_open = false
+		new_game()
+
+
+func _on_tutorial_players_ready() -> void:
+	call_deferred("_close_tutorial_mode", true)
 
 
 func _calculate_layout(size: Vector2) -> Dictionary:

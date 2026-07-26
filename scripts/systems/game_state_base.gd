@@ -40,8 +40,15 @@ const TELEPORT_CHANNEL_SECONDS := 5.0
 const SPRING_GLOVE_REACH := 1.45
 const SPRING_GLOVE_KNOCKBACK := 1.2
 const SPRING_GLOVE_STUN_SECONDS := 1.0
+const ROBOT_SPEED := ACTOR_SPEED * 0.5
+const ROBOT_ROOM_WANDER_POINTS := 3
+const ROBOT_STUN_SECONDS := 10.0
+const ROBOT_ALARM_SECONDS := 3.0
+const ROBOT_ALARM_COOLDOWN := 8.0
 const TOOL_INSPECT_DISTANCE := 1.05
 const PICKUP_DISTANCE := 0.64
+const THIEF_HIDE_DELAY := 0.0
+const THIEF_REVEAL_SECONDS := 1.0
 const NOISE_SAMPLE_RATE := 11025
 const MATCH_ROUNDS := 4
 const HUNT_SECONDS := 8 * 60
@@ -138,6 +145,13 @@ const TOOL_DEFS := {
 		"color": Color("#f1c65a"),
 		"price": 4,
 	},
+	"robot": {
+		"label": "发条巡夜偶",
+		"short": "巡夜偶",
+		"description": "以半速在召唤点九宫格内巡逻；巡查房间后才会换房，发现敌人后报警。",
+		"color": Color("#8fd0a4"),
+		"price": 5,
+	},
 }
 
 const SHOP_TOOL_TYPES := [
@@ -149,6 +163,7 @@ const SHOP_TOOL_TYPES := [
 	"spring_glove",
 	"detector",
 	"teleporter",
+	"robot",
 ]
 
 const SOUND_PATHS := {
@@ -215,6 +230,11 @@ var gm_console_open := false
 var gm_command := ""
 var gm_output := "输入 help 查看命令。"
 var gm_history: Array[String] = []
+var main_menu_open := false
+var main_menu_panel := "root"
+var main_menu_selected := 0
+var main_menu_volume_step := 8
+var main_menu_rects: Dictionary = {}
 
 var font: Font
 var world_25d: World25D

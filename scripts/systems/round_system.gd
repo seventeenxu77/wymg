@@ -143,7 +143,10 @@ func _execute_gm_command(command_line: String) -> void:
 		"next":
 			_gm_next_stage()
 		"help":
-			gm_output = "next 下一阶段｜gold A 50 加金币｜give A adrenaline 发道具｜~ / Esc 关闭"
+			gm_output = (
+				"next 下一阶段｜gold A 50 加金币｜give A adrenaline 发道具"
+				+ "｜add robot 给A装备｜tutorial 教学｜menu 返回主界面"
+			)
 		"gold":
 			if parts.size() != 3 or str(parts[1]).to_upper() not in ["A", "B"] or not str(parts[2]).is_valid_int():
 				gm_output = "用法：gold A 50"
@@ -157,8 +160,73 @@ func _execute_gm_command(command_line: String) -> void:
 				gm_output = "用法：give A adrenaline"
 				return
 			_gm_give_tool(str(parts[1]).to_upper(), str(parts[2]).to_lower())
+		"add":
+			_gm_add_command(parts)
+		"tutorial":
+			_gm_tutorial_command(parts)
+		"menu":
+			_gm_menu_command(parts)
 		_:
 			gm_output = "未知命令：%s。输入 help 查看命令。" % command
+
+
+func _gm_menu_command(parts: PackedStringArray) -> void:
+	var action := "toggle" if parts.size() < 2 else str(parts[1]).to_lower()
+	if action not in ["toggle", "on", "open", "off", "close"]:
+		gm_output = "用法：menu｜menu on｜menu off"
+		return
+	var should_open := not bool(main_menu_open) if action == "toggle" else action in ["on", "open"]
+	if should_open:
+		if has_method("_open_main_menu"):
+			call("_open_main_menu")
+		else:
+			main_menu_open = true
+		gm_console_open = false
+		gm_output = "已返回主界面。~可再次打开GM控制台。"
+	else:
+		main_menu_open = false
+		main_menu_panel = "root"
+		main_menu_selected = 0
+		main_menu_rects.clear()
+		gm_output = "已关闭主界面。"
+
+
+func _gm_tutorial_command(parts: PackedStringArray) -> void:
+	if not has_method("_open_tutorial_mode"):
+		gm_output = "当前场景不支持教程系统。"
+		return
+	var action := "start" if parts.size() < 2 else str(parts[1]).to_lower()
+	if action in ["start", "open"]:
+		call("_open_tutorial_mode")
+		gm_output = "已打开双人独立教程选择界面。"
+		return
+	if action in ["stop", "close"]:
+		call("_close_tutorial_mode", true)
+		gm_output = "已关闭教程、清理资源并重新开始正式比赛。"
+		return
+	var tutorial = get("tutorial_system")
+	if tutorial == null or not bool(tutorial.get("active")):
+		gm_output = "教程尚未打开，请先输入 tutorial。"
+		return
+	if action in ["next", "reset"]:
+		var player := "A" if parts.size() < 3 else str(parts[2]).to_upper()
+		if player not in ["A", "B"]:
+			gm_output = "玩家只能填写 A 或 B。"
+			return
+		if action == "next":
+			tutorial.call("force_next", player)
+			gm_output = "已跳过玩家%s的当前教学步骤。" % player
+		else:
+			tutorial.call("reset_run", player)
+			gm_output = "已重置玩家%s的当前教学。" % player
+		return
+	var player := action.to_upper()
+	var role := str(parts[2]).to_lower() if parts.size() >= 3 else ""
+	if player in ["A", "B"] and role in ["monster", "thief"]:
+		tutorial.call("start_run", player, role)
+		gm_output = "已让玩家%s开始%s教学。" % [player, "怪物" if role == "monster" else "盗贼"]
+		return
+	gm_output = "用法：tutorial｜tutorial A thief｜tutorial next B｜tutorial reset A｜tutorial stop"
 
 
 func _gm_next_stage() -> void:
@@ -218,6 +286,110 @@ func _gm_give_tool(player: String, tool_type: String) -> void:
 	if (player_loadouts[player] as Array).size() < TOOL_INVENTORY_CAPACITY:
 		(player_loadouts[player] as Array).append(id)
 	gm_output = "已将%s放入玩家%s仓库。" % [TOOL_DEFS[tool_type]["label"], player]
+
+
+func _gm_add_command(parts: PackedStringArray) -> void:
+	var player := "A"
+	var requested_type := ""
+	if parts.size() == 2:
+		requested_type = str(parts[1])
+	elif parts.size() == 3:
+		var second := str(parts[1]).to_upper()
+		var third := str(parts[2]).to_upper()
+		if second in ["A", "B"]:
+			player = second
+			requested_type = str(parts[2])
+		elif third in ["A", "B"]:
+			player = third
+			requested_type = str(parts[1])
+		else:
+			gm_output = "用法：add robot（默认玩家A）或 add B robot"
+			return
+	else:
+		gm_output = "用法：add robot（默认玩家A）或 add B robot"
+		return
+	var tool_type := _resolve_gm_tool_type(requested_type)
+	if tool_type == "":
+		gm_output = "无效道具。可用：%s" % "、".join(SHOP_TOOL_TYPES)
+		return
+	_gm_add_equipped_tool(player, tool_type)
+
+
+func _resolve_gm_tool_type(requested_type: String) -> String:
+	var normalized := requested_type.strip_edges().to_lower()
+	if TOOL_DEFS.has(normalized):
+		return normalized
+	var aliases := {
+		"机器人": "robot",
+		"发条巡夜偶": "robot",
+		"藏品探测器": "detector",
+		"警报器": "alarm",
+		"捕兽夹": "trap",
+		"肾上腺素": "adrenaline",
+		"替身玩偶": "decoy",
+		"留声机": "phonograph",
+		"传送器": "teleporter",
+		"弹簧拳套": "spring_glove",
+	}
+	if aliases.has(normalized):
+		return str(aliases[normalized])
+	for tool_type in TOOL_DEFS:
+		var definition: Dictionary = TOOL_DEFS[tool_type]
+		if normalized in [
+			str(definition.get("label", "")).to_lower(),
+			str(definition.get("short", "")).to_lower(),
+		]:
+			return str(tool_type)
+	return ""
+
+
+func _gm_add_equipped_tool(player: String, tool_type: String) -> void:
+	if player not in ["A", "B"]:
+		gm_output = "玩家只能填写 A 或 B。"
+		return
+	if phase in ["hide", "ready", "hunt"]:
+		var role := _role_for_player(player)
+		var inventory: Array = tool_inventories[role]
+		if inventory.size() >= TOOL_INVENTORY_CAPACITY:
+			gm_output = "玩家%s当前装备栏已满（最多3件）。" % player
+			return
+		var id := "gm-add-%s-%d" % [player, next_device_id]
+		next_device_id += 1
+		var tool := _make_tool_instance(tool_type, id)
+		inventory.append(tool)
+		tool_selected[role] = inventory.size() - 1
+		_refresh_gm_active_loadout(player, inventory, id)
+		gm_output = (
+			"已将%s直接装备给玩家%s（当前%s）。"
+			% [TOOL_DEFS[tool_type]["label"], player, _role_name(role)]
+		)
+		return
+	var loadout: Array = player_loadouts[player]
+	if loadout.size() >= TOOL_INVENTORY_CAPACITY:
+		gm_output = "玩家%s装备栏已满（最多3件）。" % player
+		return
+	var id := "gm-add-%s-%d" % [player, next_device_id]
+	next_device_id += 1
+	var tool := _make_tool_instance(tool_type, id)
+	(player_stashes[player] as Array).append(tool)
+	loadout.append(id)
+	loadout_selected[player] = loadout.size() - 1
+	gm_output = "已将%s直接放入玩家%s装备栏。" % [TOOL_DEFS[tool_type]["label"], player]
+
+
+func _refresh_gm_active_loadout(player: String, inventory: Array, added_id: String) -> void:
+	var owned_ids: Dictionary = {}
+	for tool in player_stashes[player]:
+		owned_ids[str(tool.get("id", ""))] = true
+	for tool in inventory:
+		owned_ids[str(tool.get("id", ""))] = true
+	var valid: Array = []
+	for equipped_id in player_loadouts[player]:
+		if owned_ids.has(str(equipped_id)) and valid.size() < TOOL_INVENTORY_CAPACITY:
+			valid.append(str(equipped_id))
+	if valid.size() < TOOL_INVENTORY_CAPACITY and not valid.has(added_id):
+		valid.append(added_id)
+	player_loadouts[player] = valid
 
 
 func _selected_shop_tool_type(player: String) -> String:
@@ -302,6 +474,8 @@ func _return_round_tools_to_stashes() -> void:
 	for role in ["monster", "thief"]:
 		var player := _player_for_role(role)
 		for tool in tool_inventories[role]:
+			if str(tool.get("tool_type", "")) == "robot" and bool(tool.get("deployed", false)):
+				continue
 			tool["active"] = false
 			(player_stashes[player] as Array).append(tool)
 		tool_inventories[role] = []
@@ -372,6 +546,8 @@ func _begin_hunt_countdown() -> void:
 	phase_clock = 0.0
 	monster = _make_actor(MONSTER_SPAWN_ROOM, MONSTER_SPAWN_POS, "left")
 	thief = _make_actor(ENTRANCE_ROOM, ENTRANCE_POS, "right")
+	thief["last_moved_at"] = elapsed
+	thief["revealed_until"] = elapsed + THIEF_HIDE_DELAY
 	dragging = {"monster": "", "thief": ""}
 	drag_mode = {"monster": "move", "thief": "move"}
 	furniture_hit_actions = {"monster": {}, "thief": {}}
@@ -405,6 +581,8 @@ func _enter_hunt() -> void:
 	seconds_left = HUNT_SECONDS
 	monster = _make_actor(MONSTER_SPAWN_ROOM, MONSTER_SPAWN_POS, "left")
 	thief = _make_actor(ENTRANCE_ROOM, ENTRANCE_POS, "right")
+	thief["last_moved_at"] = elapsed
+	thief["revealed_until"] = elapsed + THIEF_HIDE_DELAY
 	dragging = {"monster": "", "thief": ""}
 	drag_mode = {"monster": "move", "thief": "move"}
 	furniture_hit_actions = {"monster": {}, "thief": {}}

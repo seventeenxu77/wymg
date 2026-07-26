@@ -11,6 +11,9 @@ func _make_actor(room: Vector2i, pos: Vector2, dir: String) -> Dictionary:
 		"impact_visual_offset": Vector2.ZERO,
 		"hp": 2,
 		"moving": false,
+		"hidden_from_monster": false,
+		"last_moved_at": 0.0,
+		"revealed_until": 0.0,
 	}
 
 
@@ -271,6 +274,10 @@ func _make_tool_instance(tool_type: String, id: String) -> Dictionary:
 		result["charge"] = DETECTOR_BATTERY_SECONDS
 		result["active"] = false
 		result["next_noise"] = 0.0
+	elif tool_type == "robot":
+		result["deployed"] = false
+		result["robot_id"] = ""
+		result["stunned_until"] = 0.0
 	return result
 
 

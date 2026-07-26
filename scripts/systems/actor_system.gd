@@ -13,6 +13,14 @@ func _destroy_device_in_front(_role: String, _types: Array) -> bool:
 	return false
 
 
+func _device_hit_target_in_front(_role: String) -> Dictionary:
+	return {}
+
+
+func _apply_device_hit(_role: String, _action: Dictionary) -> bool:
+	return false
+
+
 func _move_actor_continuous(role: String, direction: Vector2, delta: float) -> void:
 	if phase == "ended" or phase == "ready" or (phase == "hide" and role == "thief"):
 		return
@@ -122,6 +130,7 @@ func _move_actor_axis(role: String, motion: Vector2) -> void:
 	if role == "monster":
 		_add_noise(role, "怪物脚步", actor, 0.42)
 	else:
+		actor["last_moved_at"] = elapsed
 		_reveal_thief(actor)
 
 
@@ -193,6 +202,18 @@ func _hit_furniture(role: String) -> void:
 	if not (furniture_hit_actions[role] as Dictionary).is_empty():
 		return
 	var actor := _get_actor(role)
+	var device := _device_hit_target_in_front(role)
+	if not device.is_empty():
+		var device_facing: Vector2 = actor.get("facing", _direction_vector(str(actor["dir"])))
+		furniture_hit_actions[role] = {
+			"elapsed": 0.0,
+			"impacted": false,
+			"room": actor["room"],
+			"target_kind": "device",
+			"target_id": str(device["id"]),
+			"facing": device_facing.normalized(),
+		}
+		return
 	var nearby := _furniture_in_front(role)
 	if nearby.is_empty():
 		_push_log("%s前方没有可撞击的家具。" % _role_name(role))
@@ -207,6 +228,7 @@ func _hit_furniture(role: String) -> void:
 		"elapsed": 0.0,
 		"impacted": false,
 		"room": actor["room"],
+		"target_kind": "furniture",
 		"furniture_id": str(nearby["id"]),
 		"facing": facing.normalized(),
 	}
@@ -241,6 +263,9 @@ func _update_furniture_hit_actions(delta: float) -> void:
 
 
 func _apply_furniture_hit(role: String, action: Dictionary) -> void:
+	if str(action.get("target_kind", "furniture")) == "device":
+		_apply_device_hit(role, action)
+		return
 	var room_coord: Vector2i = action["room"]
 	var room := _room_at(room_coord)
 	var furniture := _find_furniture(room, str(action["furniture_id"]))

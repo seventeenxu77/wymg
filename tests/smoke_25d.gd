@@ -11,6 +11,7 @@ func _run() -> void:
 	root.add_child(game)
 	await process_frame
 	await process_frame
+	game._activate_main_menu_action("start")
 
 	var renderer: World25D = game.world_25d
 	assert(bool(ProjectSettings.get_setting("physics/common/physics_interpolation")))

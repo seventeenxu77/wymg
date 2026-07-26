@@ -1,4 +1,4 @@
-# 老宅窃影 — gamejam Godot 4.7 迁移版
+# DEEP SEEK — gamejam Godot 4.7 迁移版
 
 这是 `web-whitebox` 的 Godot 4.7 原生 2.5D 迁移工程，不再依赖浏览器、React 或 Node.js。画面采用跟随角色的透视摄像机、3D 房间结构与原创手绘纸片角色/家具。
 
@@ -7,6 +7,13 @@
 使用 Godot 4.7 打开本目录的 `project.godot`，然后按 `F6` 或 `F5` 运行。
 
 也可以双击 `run_game.bat`。
+
+启动后首先进入主界面：
+
+- 鼠标悬浮并点击物品，或使用 `A / D`、方向键选择
+- `Enter / 空格`：确认
+- 设置与退出确认页面中按 `Esc` 返回
+- GM 控制台输入 `menu` 可从对局或教程返回主界面
 
 ## 操作
 

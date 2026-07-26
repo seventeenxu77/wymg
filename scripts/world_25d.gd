@@ -63,6 +63,7 @@ var attack_cone: MeshInstance3D
 
 var furniture_nodes: Dictionary = {}
 var item_nodes: Dictionary = {}
+var item_room_keys: Dictionary = {}
 var trace_nodes: Dictionary = {}
 var stroke_nodes: Dictionary = {}
 var afterimage_nodes: Dictionary = {}
@@ -107,13 +108,17 @@ const FURNITURE_DROP_HEIGHT := 10.0
 const FULL_WALL_HEIGHT := 8.5
 
 
-func setup(shared_world: World3D) -> void:
+func setup(shared_world: World3D, isolated_world := false) -> void:
 	if initialized:
 		return
 	# The 2D editor viewport has no World3D even though @tool runs this setup.
 	# Give the preview SubViewports their own world instead of leaving setup
 	# half-finished and producing null-node errors every editor frame.
-	var render_world: World3D = shared_world if shared_world != null else World3D.new()
+	var render_world: World3D = (
+		World3D.new()
+		if isolated_world
+		else shared_world if shared_world != null else World3D.new()
+	)
 	world_root = Node3D.new()
 	world_root.name = "World25D"
 	add_child(world_root)
@@ -129,6 +134,11 @@ func setup(shared_world: World3D) -> void:
 		render_world.environment = env_node.environment
 	monster_viewport = _create_viewport("MonsterViewport", render_world)
 	thief_viewport = _create_viewport("ThiefViewport", render_world)
+	# Tutorial sessions run concurrently. Parenting their generated world below
+	# one of the shared-world SubViewports keeps every session in its own
+	# World3D while both tutorial cameras can still render that same resource.
+	if isolated_world:
+		world_root.reparent(monster_viewport)
 	monster_camera = _create_camera(monster_viewport, "MonsterCamera", LAYER_MONSTER_WORLD | LAYER_MONSTER | LAYER_SHARED_ACTORS | LAYER_AFTERIMAGE | LAYER_MONSTER_EFFECT | LAYER_MONSTER_GHOST)
 	thief_camera = _create_camera(thief_viewport, "ThiefCamera", LAYER_THIEF_WORLD | LAYER_THIEF | LAYER_SHARED_ACTORS | LAYER_THIEF_GHOST)
 	monster_node = _create_actor("monster", LAYER_MONSTER)
@@ -244,6 +254,7 @@ func rebuild(rooms: Array) -> void:
 		child.queue_free()
 	furniture_nodes.clear()
 	item_nodes.clear()
+	item_room_keys.clear()
 	trace_nodes.clear()
 	stroke_nodes.clear()
 	room_visuals.clear()
@@ -949,6 +960,7 @@ func _create_item_node(room: Vector2i, item: Dictionary) -> void:
 		node.add_child(value_label)
 	node.position = world_position(room, item["pos"])
 	item_nodes[item["id"]] = node
+	item_room_keys[item["id"]] = _room_key(room)
 
 
 func _item_visual_info(item: Dictionary) -> Dictionary:
@@ -985,6 +997,8 @@ func _item_visual_info(item: Dictionary) -> Dictionary:
 			return {"path": "res://GJGamejam素材/2.5D物品/gm2_glove_clean.png", "pixel_size": 0.0062}
 		"detector":
 			return {"path": "res://GJGamejam素材/2.5D物品/gm2_detector_clean.png", "pixel_size": 0.0062}
+		"robot":
+			return {"path": "res://GJGamejam素材/2.5D物品/玩偶.png", "pixel_size": 0.0062, "height": 0.54}
 		_:
 			return {"path": "res://GJGamejam素材/2.5D物品/玩偶.png", "pixel_size": 0.0062}
 
@@ -1027,7 +1041,11 @@ func sync(rooms: Array, monster: Dictionary, thief: Dictionary, afterimages: Arr
 	_sync_actor(thief_node, thief, time, true)
 	var actors_share_room: bool = monster["room"] == thief["room"]
 	_set_actor_visual_layers(monster_node, LAYER_MONSTER | (LAYER_SHARED_ACTORS if actors_share_room else 0))
-	_set_actor_visual_layers(thief_node, LAYER_THIEF | (LAYER_SHARED_ACTORS if actors_share_room else 0))
+	var thief_hidden := bool(thief.get("hidden_from_monster", false))
+	_set_actor_visual_layers(
+		thief_node,
+		LAYER_THIEF | (LAYER_SHARED_ACTORS if actors_share_room and not thief_hidden else 0),
+	)
 	_follow_camera(monster_camera, monster, "monster")
 	_follow_camera(thief_camera, thief, "thief")
 	# Trigger furniture bounce BEFORE the room loop so furniture
@@ -1089,6 +1107,11 @@ func sync(rooms: Array, monster: Dictionary, thief: Dictionary, afterimages: Arr
 			if not item_nodes.has(item_id):
 				_create_item_node(coord, item)
 			var item_node: Node3D = item_nodes[item_id]
+			if (
+				str(item.get("device_type", "")) == "robot"
+				and str(item_room_keys.get(item_id, "")) != _room_key(coord)
+			):
+				_reassign_item_room_visual(item_id, item_node, coord)
 			var item_kind := str(item.get("kind", ""))
 			var visual_position := world_position(coord, item["pos"])
 			if (
@@ -1119,6 +1142,9 @@ func sync(rooms: Array, monster: Dictionary, thief: Dictionary, afterimages: Arr
 				var trap_texture: Texture2D = load(trap_path)
 				if item_sprite.texture != trap_texture:
 					item_sprite.texture = trap_texture
+			if item_sprite and str(item.get("device_type", "")) == "robot":
+				var robot_stunned := time < float(item.get("stunned_until", 0.0))
+				item_sprite.modulate = Color("#777b73") if robot_stunned else Color.WHITE
 		_sync_room_marks(room)
 	_sync_afterimages(afterimages, monster["room"], thief["room"])
 	_sync_attack(monster, attack_active)
@@ -1167,10 +1193,14 @@ func _sync_actor(node: Node3D, actor: Dictionary, time: float, is_thief: bool) -
 	var sprite_foot_offset := float(sprite.get_meta("foot_offset_x", 0.0))
 	sprite.position.x = -sprite_foot_offset if sprite.flip_h else sprite_foot_offset
 	var brightness := _light_brightness_at(_room_key(actor["room"]), node.position)
-	sprite.modulate = Color(brightness, brightness, brightness)
+	var hidden_alpha := 0.48 if is_thief and bool(actor.get("hidden_from_monster", false)) else 1.0
+	sprite.modulate = Color(brightness, brightness, brightness, hidden_alpha)
 	var phase_offset := 1.6 if is_thief else 0.0
 	var moving: bool = actor.get("moving", false)
-	if moving:
+	if bool(actor.get("downed", false)):
+		pivot.position = Vector3.ZERO
+		pivot.rotation.z = PI * 0.5
+	elif moving:
 		# Keep the foot planted at the actor origin. A small upward-only step
 		# gives motion without driving the cutout below the floor or away from
 		# its shadow.
@@ -1323,7 +1353,27 @@ func _register_room_visual(room: Vector2i, visual: VisualInstance3D) -> void:
 	visual.layers = _layers_for_room_key(key)
 
 
-func _sync_room_layers(monster_room: Vector2i, thief_room: Vector2i, game_time: float) -> void:
+func _reassign_item_room_visual(item_id: String, node: Node3D, room: Vector2i) -> void:
+	var old_key := str(item_room_keys.get(item_id, ""))
+	var new_key := _room_key(room)
+	if old_key == new_key:
+		return
+	if room_visuals.has(old_key):
+		for child in node.get_children():
+			if child is VisualInstance3D:
+				(room_visuals[old_key] as Array).erase(child)
+	if not room_visuals.has(new_key):
+		room_visuals[new_key] = []
+	for child in node.get_children():
+		if child is VisualInstance3D:
+			var visual := child as VisualInstance3D
+			if not (room_visuals[new_key] as Array).has(visual):
+				(room_visuals[new_key] as Array).append(visual)
+			visual.layers = _layers_for_room_key(new_key)
+	item_room_keys[item_id] = new_key
+
+
+func _sync_room_layers(monster_room: Vector2i, thief_room: Vector2i, game_time := 0.0) -> void:
 	if monster_room == active_monster_room and thief_room == active_thief_room:
 		return
 	# Enable the destination rooms first. The previous rooms remain visible until

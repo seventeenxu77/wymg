@@ -147,6 +147,8 @@ func _use_selected_tool(role: String) -> void:
 	if tool.is_empty():
 		_push_log("%s没有可用道具。" % _role_name(role))
 		return
+	if role == "thief":
+		_reveal_thief()
 	match str(tool["tool_type"]):
 		"detector": _toggle_detector(role, tool)
 		"alarm": _place_alarm(role)
@@ -156,6 +158,7 @@ func _use_selected_tool(role: String) -> void:
 		"phonograph": _place_phonograph(role)
 		"teleporter": _start_teleporter(role)
 		"spring_glove": _use_spring_glove(role)
+		"robot": _use_robot(role, tool)
 
 
 func _toggle_detector(role: String, tool: Dictionary) -> void:
@@ -225,6 +228,108 @@ func _spawn_device(role: String, device_type: String, position: Vector2) -> Dict
 	next_device_id += 1
 	_room_at(actor["room"])["items"].append(device)
 	return device
+
+
+func _use_robot(role: String, tool: Dictionary) -> void:
+	if bool(tool.get("deployed", false)):
+		_swap_with_robot(role, tool)
+		return
+	var actor := _get_actor(role)
+	var device := _spawn_device(role, "robot", _device_position(role, 0.52))
+	device["origin_room"] = actor["room"]
+	device["patrol_rooms"] = _robot_patrol_rooms(actor["room"])
+	device["waypoints"] = []
+	device["stunned_until"] = 0.0
+	device["next_alarm"] = 0.0
+	device["alert_until"] = 0.0
+	device["stuck_time"] = 0.0
+	device["state"] = "active"
+	tool["deployed"] = true
+	tool["robot_id"] = str(device["id"])
+	tool["stunned_until"] = 0.0
+	_add_noise(role, "召唤发条巡夜偶")
+	if role == "thief":
+		_reveal_thief()
+	_push_log(
+		"%s召唤了发条巡夜偶，它会在周围九宫格的 %d 个可达房间内巡逻。"
+		% [_role_name(role), (device["patrol_rooms"] as Array).size()]
+	)
+
+
+func _swap_with_robot(role: String, tool: Dictionary) -> void:
+	var found := _find_device_entry(str(tool.get("robot_id", "")))
+	if found.is_empty():
+		_push_log("%s的巡夜偶已经失效。" % _role_name(role))
+		_consume_selected_tool(role)
+		return
+	var robot: Dictionary = found["item"]
+	if elapsed < float(robot.get("stunned_until", 0.0)):
+		_push_log(
+			"巡夜偶仍在停机，%.1f秒后才能换位。"
+			% (float(robot["stunned_until"]) - elapsed)
+		)
+		return
+	var actor := _get_actor(role)
+	var old_room: Vector2i = actor["room"]
+	var old_pos: Vector2 = actor["pos"]
+	var robot_room: Vector2i = (found["room"] as Dictionary)["coord"]
+	var robot_pos: Vector2 = robot["pos"]
+	dragging[role] = ""
+	drag_mode[role] = "move"
+	actor["room"] = robot_room
+	actor["pos"] = robot_pos
+	actor["moving"] = false
+	robot["collected"] = true
+	_add_noise_at(role, "巡夜偶换位起点", old_room, old_pos, 0.0, 2.0, false)
+	_add_noise_at(role, "巡夜偶换位终点", robot_room, robot_pos, 0.0, 2.0, false)
+	if role == "thief":
+		_reveal_thief(actor)
+	_consume_selected_tool(role)
+	_push_log("%s与巡夜偶交换位置，巡夜偶随即报废。" % _role_name(role))
+
+
+func _robot_patrol_rooms(origin: Vector2i) -> Array:
+	var result: Array = []
+	var pending: Array = [origin]
+	var visited := {_coord_key(origin): true}
+	while not pending.is_empty():
+		var coord: Vector2i = pending.pop_front()
+		result.append(coord)
+		var room := _room_at(coord)
+		for edge in DIRECTIONS:
+			if not (room["doors"] as Array).has(str(edge["name"])):
+				continue
+			var neighbor: Vector2i = coord + (edge["delta"] as Vector2i)
+			if (
+				neighbor.x < 0 or neighbor.y < 0
+				or neighbor.x >= MAP_SIZE or neighbor.y >= MAP_SIZE
+				or absi(neighbor.x - origin.x) > 1
+				or absi(neighbor.y - origin.y) > 1
+			):
+				continue
+			var key := _coord_key(neighbor)
+			if visited.has(key):
+				continue
+			visited[key] = true
+			pending.append(neighbor)
+	return result
+
+
+func _coord_key(coord: Vector2i) -> String:
+	return "%d:%d" % [coord.x, coord.y]
+
+
+func _find_device_entry(device_id: String) -> Dictionary:
+	if device_id == "":
+		return {}
+	for room in rooms:
+		for item in room["items"]:
+			if (
+				str(item.get("id", "")) == device_id
+				and not bool(item.get("collected", false))
+			):
+				return {"room": room, "item": item}
+	return {}
 
 
 func _place_trap(role: String) -> void:
@@ -397,6 +502,69 @@ func _cancel_teleporter(role: String, reason: String) -> void:
 	_push_log("%s，%s的传送被打断。" % [reason, _role_name(role)])
 
 
+func _device_hit_target_in_front(role: String) -> Dictionary:
+	var actor := _get_actor(role)
+	var room := _room_at(actor["room"])
+	var facing: Vector2 = actor.get("facing", _direction_vector(str(actor["dir"])))
+	var best: Dictionary = {}
+	var best_distance := INF
+	for item in room["items"]:
+		if (
+			bool(item.get("collected", false))
+			or str(item.get("kind", "")) != "device"
+			or str(item.get("device_type", "")) != "robot"
+			or str(item.get("owner", "")) == role
+		):
+			continue
+		var offset: Vector2 = (item["pos"] as Vector2) - (actor["pos"] as Vector2)
+		var distance := offset.length()
+		if distance <= 0.001 or distance > FURNITURE_HIT_REACH:
+			continue
+		if offset.normalized().dot(facing) < FURNITURE_HIT_DOT:
+			continue
+		if distance < best_distance:
+			best = item
+			best_distance = distance
+	return best
+
+
+func _apply_device_hit(role: String, action: Dictionary) -> bool:
+	var found := _find_device_entry(str(action.get("target_id", "")))
+	if found.is_empty():
+		_push_log("%s撞向巡夜偶，但它已经离开。" % _role_name(role))
+		return false
+	var robot: Dictionary = found["item"]
+	var robot_room: Vector2i = (found["room"] as Dictionary)["coord"]
+	var actor := _get_actor(role)
+	var facing: Vector2 = action.get("facing", actor.get("facing", Vector2.RIGHT))
+	var offset: Vector2 = (robot["pos"] as Vector2) - (actor["pos"] as Vector2)
+	if (
+		actor["room"] != robot_room
+		or offset.length() > FURNITURE_HIT_REACH + HIT_LUNGE_DISTANCE
+		or (not offset.is_zero_approx() and offset.normalized().dot(facing) < 0.35)
+	):
+		_push_log("%s撞向巡夜偶，但它躲开了。" % _role_name(role))
+		return false
+	var stunned_until := elapsed + ROBOT_STUN_SECONDS
+	robot["stunned_until"] = stunned_until
+	robot["state"] = "stunned"
+	robot["waypoints"] = []
+	robot["stuck_time"] = 0.0
+	for inventory in tool_inventories.values():
+		for tool in inventory:
+			if str(tool.get("robot_id", "")) == str(robot["id"]):
+				tool["stunned_until"] = stunned_until
+	_add_noise(role, "撞击巡夜偶")
+	if role == "thief":
+		_reveal_thief()
+	_play_sound("furniture_hit", -9.0, 0.08)
+	_push_log(
+		"%s撞晕了敌方巡夜偶；它将在10秒内停止巡逻、报警和换位。"
+		% _role_name(role)
+	)
+	return true
+
+
 func _update_tool_states(delta: float) -> void:
 	for room in rooms:
 		for furniture in room["furniture"]:
@@ -427,7 +595,236 @@ func _update_tool_states(delta: float) -> void:
 				_complete_extraction("传送器")
 
 
-func _update_devices() -> void:
+func _update_robots(delta: float) -> void:
+	var robots: Array = []
+	for room in rooms:
+		for item in room["items"]:
+			if (
+				not bool(item.get("collected", false))
+				and str(item.get("kind", "")) == "device"
+				and str(item.get("device_type", "")) == "robot"
+			):
+				robots.append(item)
+	for robot in robots:
+		var found := _find_device_entry(str(robot["id"]))
+		if found.is_empty():
+			continue
+		var room: Dictionary = found["room"]
+		if elapsed < float(robot.get("stunned_until", 0.0)):
+			robot["state"] = "stunned"
+			continue
+		if str(robot.get("state", "")) == "stunned":
+			robot["state"] = "active"
+			_push_log("%s的巡夜偶恢复工作。" % _role_name(str(robot.get("owner", "monster"))))
+			robot["waypoints"] = []
+			robot["stuck_time"] = 0.0
+			_sync_robot_controller_state(robot, 0.0)
+		_check_robot_alarm(robot, room)
+		if delta <= 0.0:
+			continue
+		_update_robot_movement(robot, room["coord"], delta)
+
+
+func _sync_robot_controller_state(robot: Dictionary, stunned_until: float) -> void:
+	for inventory in tool_inventories.values():
+		for tool in inventory:
+			if str(tool.get("robot_id", "")) == str(robot.get("id", "")):
+				tool["stunned_until"] = stunned_until
+
+
+func _check_robot_alarm(robot: Dictionary, room: Dictionary) -> void:
+	if phase != "hunt" or elapsed < float(robot.get("next_alarm", 0.0)):
+		return
+	var owner := str(robot.get("owner", "monster"))
+	var enemy_role := "thief" if owner == "monster" else "monster"
+	var enemy := _get_actor(enemy_role)
+	if enemy["room"] != room["coord"]:
+		return
+	robot["next_alarm"] = elapsed + ROBOT_ALARM_COOLDOWN
+	robot["alert_until"] = elapsed + ROBOT_ALARM_SECONDS
+	_add_noise_at(
+		owner,
+		"巡夜偶警报",
+		room["coord"],
+		robot["pos"],
+		0.0,
+		ROBOT_ALARM_SECONDS,
+		true,
+	)
+	_push_log(
+		"%s的巡夜偶在房间(%d,%d)发现敌人，警报持续3秒！"
+		% [owner, room["coord"].x + 1, room["coord"].y + 1]
+	)
+
+
+func _update_robot_movement(robot: Dictionary, room_coord: Vector2i, delta: float) -> void:
+	var waypoints: Array = robot.get("waypoints", [])
+	if waypoints.is_empty():
+		waypoints = _make_robot_waypoints(robot, room_coord)
+		robot["waypoints"] = waypoints
+	if waypoints.is_empty():
+		return
+	var current_global := _robot_global_position(room_coord, robot["pos"])
+	var target_global: Vector2 = waypoints[0]
+	var to_target := target_global - current_global
+	if to_target.length() <= 0.08:
+		waypoints.pop_front()
+		robot["waypoints"] = waypoints
+		return
+	var travel := minf(ROBOT_SPEED * delta, to_target.length())
+	var before := current_global
+	var current_room := _move_robot_motion(robot, room_coord, to_target.normalized() * travel)
+	var after := _robot_global_position(current_room, robot["pos"])
+	if after.distance_to(before) <= 0.001:
+		robot["stuck_time"] = float(robot.get("stuck_time", 0.0)) + delta
+		if float(robot["stuck_time"]) >= 0.45:
+			robot["waypoints"] = []
+			robot["stuck_time"] = 0.0
+	else:
+		robot["stuck_time"] = 0.0
+	if after.distance_to(target_global) <= 0.1 and not (robot["waypoints"] as Array).is_empty():
+		(robot["waypoints"] as Array).pop_front()
+
+
+func _make_robot_waypoints(robot: Dictionary, current_room: Vector2i) -> Array:
+	var patrol_rooms: Array = robot.get("patrol_rooms", [current_room])
+	if patrol_rooms.is_empty():
+		patrol_rooms = [current_room]
+	var result: Array = []
+	var current_data := _room_at(current_room)
+	var fallback: Vector2 = robot["pos"]
+	for _index in range(ROBOT_ROOM_WANDER_POINTS):
+		var local_target := _robot_random_position(current_data, fallback)
+		result.append(_robot_global_position(current_room, local_target))
+		fallback = local_target
+	var exits: Array = []
+	for edge in DIRECTIONS:
+		if not (current_data["doors"] as Array).has(str(edge["name"])):
+			continue
+		var neighbor: Vector2i = current_room + (edge["delta"] as Vector2i)
+		if patrol_rooms.has(neighbor):
+			exits.append({"room": neighbor, "delta": edge["delta"]})
+	if not exits.is_empty():
+		var chosen: Dictionary = exits[rng.randi_range(0, exits.size() - 1)]
+		var next_room: Vector2i = chosen["room"]
+		var room_delta: Vector2i = chosen["delta"]
+		result.append(
+			_robot_global_position(
+				next_room,
+				_robot_door_entry_position(room_delta),
+			)
+		)
+	return result
+
+
+func _robot_door_entry_position(delta_room: Vector2i) -> Vector2:
+	if delta_room.x > 0:
+		return Vector2(0.32, ROOM_SIZE * 0.5)
+	if delta_room.x < 0:
+		return Vector2(ROOM_SIZE - 0.32, ROOM_SIZE * 0.5)
+	if delta_room.y > 0:
+		return Vector2(ROOM_SIZE * 0.5, 0.32)
+	return Vector2(ROOM_SIZE * 0.5, ROOM_SIZE - 0.32)
+
+
+func _robot_random_position(room: Dictionary, fallback: Vector2) -> Vector2:
+	for _attempt in range(32):
+		var candidate := Vector2(
+			0.42 + rng.randf() * (ROOM_SIZE - 0.84),
+			0.42 + rng.randf() * (ROOM_SIZE - 0.84),
+		)
+		if not _position_clears_room_walls(room, candidate):
+			continue
+		var blocked := false
+		for furniture in room["furniture"]:
+			if (
+				not bool(furniture.get("destroyed", false))
+				and _actor_overlaps_furniture(candidate, furniture)
+			):
+				blocked = true
+				break
+		if not blocked:
+			return candidate
+	return fallback
+
+
+func _robot_global_position(room: Vector2i, pos: Vector2) -> Vector2:
+	return Vector2(room) * ROOM_SIZE + pos
+
+
+func _move_robot_motion(
+	robot: Dictionary,
+	start_room: Vector2i,
+	motion: Vector2
+) -> Vector2i:
+	var room_coord := start_room
+	var subdivisions := maxi(1, int(ceil(motion.length() / 0.05)))
+	var step := motion / float(subdivisions)
+	for _index in range(subdivisions):
+		if not is_zero_approx(step.x):
+			room_coord = _move_robot_axis(robot, room_coord, Vector2(step.x, 0.0))
+		if not is_zero_approx(step.y):
+			room_coord = _move_robot_axis(robot, room_coord, Vector2(0.0, step.y))
+	return room_coord
+
+
+func _move_robot_axis(
+	robot: Dictionary,
+	room_coord: Vector2i,
+	motion: Vector2
+) -> Vector2i:
+	var room := _room_at(room_coord)
+	var target_room := room_coord
+	var target_pos: Vector2 = robot["pos"] + motion
+	if (
+		target_pos.x < 0.0 or target_pos.x >= ROOM_SIZE
+		or target_pos.y < 0.0 or target_pos.y >= ROOM_SIZE
+	):
+		var direction_name := _direction_name(motion)
+		var room_delta := Vector2i(
+			int(signf(motion.x)) if not is_zero_approx(motion.x) else 0,
+			int(signf(motion.y)) if not is_zero_approx(motion.y) else 0,
+		)
+		var current_pos: Vector2 = robot["pos"]
+		var aligned: bool = (
+			absf(current_pos.y - ROOM_SIZE * 0.5) <= 0.72
+			if room_delta.x != 0
+			else absf(current_pos.x - ROOM_SIZE * 0.5) <= 0.72
+		)
+		if not (room["doors"] as Array).has(direction_name) or not aligned:
+			return room_coord
+		target_room += room_delta
+		if (
+			target_room.x < 0 or target_room.y < 0
+			or target_room.x >= MAP_SIZE or target_room.y >= MAP_SIZE
+		):
+			return room_coord
+		if target_pos.x < 0.0:
+			target_pos.x += ROOM_SIZE
+		if target_pos.x >= ROOM_SIZE:
+			target_pos.x -= ROOM_SIZE
+		if target_pos.y < 0.0:
+			target_pos.y += ROOM_SIZE
+		if target_pos.y >= ROOM_SIZE:
+			target_pos.y -= ROOM_SIZE
+	var target_data := _room_at(target_room)
+	if not _position_clears_room_walls(target_data, target_pos):
+		return room_coord
+	for furniture in target_data["furniture"]:
+		if (
+			not bool(furniture.get("destroyed", false))
+			and _actor_overlaps_furniture(target_pos, furniture)
+		):
+			return room_coord
+	robot["pos"] = target_pos
+	if target_room != room_coord:
+		(room["items"] as Array).erase(robot)
+		(target_data["items"] as Array).append(robot)
+	return target_room
+
+
+func _update_devices(delta := 0.0) -> void:
+	_update_robots(delta)
 	for room in rooms:
 		for item in room["items"]:
 			if bool(item.get("collected", false)) or str(item.get("kind", "")) != "device":

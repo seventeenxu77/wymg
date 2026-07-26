@@ -168,9 +168,16 @@ func _play_sound(sound_name: String, volume_db := -10.0, throttle := 0.0) -> voi
 
 
 func _reveal_thief(actor_override: Dictionary = {}) -> void:
-	if phase != "hunt" or elapsed - last_afterimage_at < 0.5:
+	if phase != "hunt":
 		return
 	var actor := actor_override if not actor_override.is_empty() else thief
+	actor["hidden_from_monster"] = false
+	actor["revealed_until"] = maxf(
+		float(actor.get("revealed_until", 0.0)),
+		elapsed + THIEF_REVEAL_SECONDS,
+	)
+	if elapsed - last_afterimage_at < 0.5:
+		return
 	last_afterimage_at = elapsed
 	afterimages.append({
 		"room": actor["room"],
