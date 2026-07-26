@@ -29,8 +29,8 @@ func _run() -> void:
 	assert(renderer.monster_viewport.use_taa)
 	assert(renderer.thief_viewport.use_taa)
 	assert(World25D.FLOOR_TEXTURES.size() == 12)
-	assert(renderer.monster_node.has_node("SwayPivot/OutlineSprite"))
-	assert(renderer.thief_node.has_node("SwayPivot/OutlineSprite"))
+	assert(not renderer.monster_node.has_node("SwayPivot/OutlineSprite"))
+	assert(not renderer.thief_node.has_node("SwayPivot/OutlineSprite"))
 	assert((renderer.monster_node.get_node("SwayPivot/PaperSprite") as Sprite3D).texture != null)
 	assert((renderer.thief_node.get_node("SwayPivot/PaperSprite") as Sprite3D).texture != null)
 	assert((renderer.monster_camera.cull_mask & World25D.LAYER_MONSTER) != 0)
@@ -43,8 +43,8 @@ func _run() -> void:
 	var thief_sprite := renderer.thief_node.get_node("SwayPivot/PaperSprite") as Sprite3D
 	assert(monster_sprite.billboard == BaseMaterial3D.BILLBOARD_FIXED_Y)
 	assert(thief_sprite.billboard == BaseMaterial3D.BILLBOARD_FIXED_Y)
-	assert(monster_sprite.alpha_cut == SpriteBase3D.ALPHA_CUT_DISABLED)
-	assert(thief_sprite.alpha_cut == SpriteBase3D.ALPHA_CUT_DISABLED)
+	assert(monster_sprite.alpha_cut == SpriteBase3D.ALPHA_CUT_OPAQUE_PREPASS)
+	assert(thief_sprite.alpha_cut == SpriteBase3D.ALPHA_CUT_OPAQUE_PREPASS)
 	assert(monster_sprite.render_priority == 1)
 	assert(thief_sprite.render_priority == 1)
 	assert(is_equal_approx(

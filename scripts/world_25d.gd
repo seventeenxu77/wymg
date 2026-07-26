@@ -567,8 +567,10 @@ func _add_door_post(room: Vector2i, origin: Vector3, side: String, offset: float
 
 
 func _create_actor(role: String, layer: int) -> Node3D:
-	var actor := Node3D.new()
+	var actor := CharacterBody3D.new()
 	actor.name = "MonsterCutout" if role == "monster" else "ThiefCutout"
+	actor.collision_layer = 2
+	actor.collision_mask = 1
 	world_root.add_child(actor)
 	var shadow := MeshInstance3D.new()
 	var shadow_mesh := CylinderMesh.new()
@@ -586,31 +588,27 @@ func _create_actor(role: String, layer: int) -> Node3D:
 	actor.add_child(sway_pivot)
 	var texture: Texture2D = load("res://GJGamejam素材/人物/怪物.png" if role == "monster" else "res://GJGamejam素材/人物/主角.png")
 	var pixel_size := 0.00263 if role == "monster" else 0.00270
+	var collision_shape := CollisionShape3D.new()
+	collision_shape.name = "CollisionShape3D"
+	var capsule := CapsuleShape3D.new()
+	# The collision width and height come from the rendered cutout itself.
+	# Gameplay uses the same half-width converted into room coordinates.
+	capsule.radius = texture.get_width() * pixel_size * 0.5
+	capsule.height = maxf(texture.get_height() * pixel_size, capsule.radius * 2.0)
+	collision_shape.shape = capsule
+	collision_shape.position.y = capsule.height * 0.5
+	actor.add_child(collision_shape)
 	# These source pixels are the center of the lowest supporting foot in each
 	# cutout. The generated quad is shifted so this point, rather than the
 	# texture center, is exactly above the actor's ground position.
 	var foot_x := 372.0 if role == "monster" else 300.0
-	var outline := Sprite3D.new()
-	outline.name = "OutlineSprite"
-	outline.texture = texture
-	outline.pixel_size = pixel_size * 1.12
-	outline.position = _foot_anchored_sprite_position(texture, outline.pixel_size, foot_x)
-	outline.modulate = Color.BLACK
-	outline.billboard = BaseMaterial3D.BILLBOARD_FIXED_Y
-	# Keep the two overlapping cutouts in the transparent pass. Making both
-	# coplanar sprites write opaque depth causes severe z-fighting while moving.
-	outline.alpha_cut = SpriteBase3D.ALPHA_CUT_DISABLED
-	outline.render_priority = 0
-	outline.set_meta("foot_offset_x", outline.position.x)
-	outline.layers = layer
-	sway_pivot.add_child(outline)
 	var sprite := Sprite3D.new()
 	sprite.name = "PaperSprite"
 	sprite.texture = texture
 	sprite.pixel_size = pixel_size
 	sprite.position = _foot_anchored_sprite_position(texture, sprite.pixel_size, foot_x)
 	sprite.billboard = BaseMaterial3D.BILLBOARD_FIXED_Y
-	sprite.alpha_cut = SpriteBase3D.ALPHA_CUT_DISABLED
+	sprite.alpha_cut = SpriteBase3D.ALPHA_CUT_OPAQUE_PREPASS
 	sprite.render_priority = 1
 	sprite.set_meta("foot_offset_x", sprite.position.x)
 	sprite.layers = layer
@@ -654,6 +652,18 @@ func _create_furniture_node(room: Vector2i, furniture: Dictionary) -> void:
 	base.visible = false
 	_register_room_visual(room, base)
 	node.add_child(base)
+	var collision_body := StaticBody3D.new()
+	collision_body.name = "CollisionBody"
+	collision_body.collision_layer = 1
+	collision_body.collision_mask = 2
+	var collision_shape := CollisionShape3D.new()
+	collision_shape.name = "CollisionShape3D"
+	var box_shape := BoxShape3D.new()
+	box_shape.size = info["size"]
+	collision_shape.shape = box_shape
+	collision_shape.position.y = box_shape.size.y * 0.5
+	collision_body.add_child(collision_shape)
+	node.add_child(collision_body)
 	var selection := MeshInstance3D.new()
 	selection.name = "SelectionRing"
 	var selection_mesh := CylinderMesh.new()
@@ -684,6 +694,7 @@ func _create_furniture_node(room: Vector2i, furniture: Dictionary) -> void:
 	sprite.pixel_size = ps
 	sprite.position.y = sprite_y
 	sprite.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	sprite.alpha_cut = SpriteBase3D.ALPHA_CUT_OPAQUE_PREPASS
 	_register_room_visual(room, sprite)
 	node.add_child(sprite)
 	var state_label := Label3D.new()
@@ -723,6 +734,7 @@ func _create_item_node(room: Vector2i, item: Dictionary) -> void:
 	sprite.texture = load(visual["path"])
 	sprite.pixel_size = float(visual["pixel_size"])
 	sprite.modulate = visual.get("color", Color.WHITE)
+	sprite.alpha_cut = SpriteBase3D.ALPHA_CUT_OPAQUE_PREPASS
 	if str(item.get("device_type", "")) == "decoy":
 		var foot_x := 372.0 if str(item.get("character_role", "")) == "monster" else 300.0
 		sprite.position = _foot_anchored_sprite_position(sprite.texture, sprite.pixel_size, foot_x)
@@ -850,6 +862,9 @@ func sync(rooms: Array, monster: Dictionary, thief: Dictionary, afterimages: Arr
 			var phase := float(abs(str(furniture_id).hash()) % 628) / 100.0
 			furniture_node.rotation.y = -deg_to_rad(float(furniture["rotation"])) + deg_to_rad(sin(time * 5.2 + phase) * shake_degrees)
 			furniture_node.scale = Vector3(1.0, 0.5, 1.0) if bool(furniture.get("destroyed", false)) else Vector3.ONE
+			var furniture_collision: CollisionShape3D = furniture_node.get_node_or_null("CollisionBody/CollisionShape3D")
+			if furniture_collision:
+				furniture_collision.disabled = bool(furniture.get("destroyed", false))
 			var ring: MeshInstance3D = furniture_node.get_node("SelectionRing")
 			ring.visible = selected["monster"] == furniture_id or selected["thief"] == furniture_id
 			var state_label: Label3D = furniture_node.get_node("StateLabel")
@@ -934,20 +949,14 @@ func _sync_actor(node: Node3D, actor: Dictionary, time: float, is_thief: bool) -
 	if not pivot:
 		return
 	var sprite: Sprite3D = pivot.get_node_or_null("PaperSprite")
-	var outline: Sprite3D = pivot.get_node_or_null("OutlineSprite")
 	if not sprite:
 		return
 	var dir: String = actor["dir"]
 	sprite.flip_h = dir == "left"
 	var sprite_foot_offset := float(sprite.get_meta("foot_offset_x", 0.0))
 	sprite.position.x = -sprite_foot_offset if sprite.flip_h else sprite_foot_offset
-	if outline:
-		outline.flip_h = sprite.flip_h
-		var outline_foot_offset := float(outline.get_meta("foot_offset_x", 0.0))
-		outline.position.x = -outline_foot_offset if outline.flip_h else outline_foot_offset
 	var brightness := _light_brightness_at(_room_key(actor["room"]), node.position)
 	sprite.modulate = Color(brightness, brightness, brightness)
-	# The outline remains black so lighting never erases the silhouette border.
 	var phase_offset := 1.6 if is_thief else 0.0
 	var moving: bool = actor.get("moving", false)
 	if moving:
@@ -1017,6 +1026,7 @@ func _sync_afterimages(images: Array, monster_room: Vector2i, thief_room: Vector
 			sprite.pixel_size = 0.00270
 			sprite.position.y = 0.86
 			sprite.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+			sprite.alpha_cut = SpriteBase3D.ALPHA_CUT_OPAQUE_PREPASS
 			sprite.modulate = Color(1.0, 0.13, 0.1, 0.58)
 			sprite.layers = LAYER_AFTERIMAGE
 			node.add_child(sprite)

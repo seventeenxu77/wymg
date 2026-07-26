@@ -33,21 +33,52 @@ func _initialize() -> void:
 	bed["rotation"] = 90.0
 	assert(not game._actor_overlaps_furniture(Vector2(3.0, 2.5), bed))
 	assert(game._actor_overlaps_furniture(Vector2(2.5, 3.0), bed))
+	bed["rotation"] = 0.0
+	assert(game._actor_collision_radius("monster") > game._actor_collision_radius("thief"))
+	assert(game._actor_overlaps_furniture(Vector2(3.2, 2.5), bed, "monster"))
+	assert(not game._actor_overlaps_furniture(Vector2(3.2, 2.5), bed, "thief"))
+	assert(game._position_clears_room_walls(door_room, Vector2(0.2, 2.82), "thief"))
+	assert(not game._position_clears_room_walls(door_room, Vector2(0.2, 2.82), "monster"))
 
 	var renderer := World25D.new()
 	renderer.world_root = Node3D.new()
 	renderer.add_child(renderer.world_root)
+	renderer.level_root = Node3D.new()
+	renderer.world_root.add_child(renderer.level_root)
 	var monster_actor := renderer._create_actor("monster", World25D.LAYER_MONSTER)
 	var monster_sprite := monster_actor.get_node("SwayPivot/PaperSprite") as Sprite3D
-	var monster_outline := monster_actor.get_node("SwayPivot/OutlineSprite") as Sprite3D
+	assert(monster_actor is CharacterBody3D)
+	assert(not monster_actor.has_node("SwayPivot/OutlineSprite"))
 	assert(monster_sprite.billboard == BaseMaterial3D.BILLBOARD_FIXED_Y)
-	assert(monster_sprite.alpha_cut == SpriteBase3D.ALPHA_CUT_DISABLED)
-	assert(monster_outline.alpha_cut == SpriteBase3D.ALPHA_CUT_DISABLED)
-	assert(monster_outline.render_priority < monster_sprite.render_priority)
+	assert(monster_sprite.alpha_cut == SpriteBase3D.ALPHA_CUT_OPAQUE_PREPASS)
+	var actor_collision := monster_actor.get_node("CollisionShape3D") as CollisionShape3D
+	var actor_capsule := actor_collision.shape as CapsuleShape3D
+	assert(is_equal_approx(
+		actor_capsule.radius,
+		monster_sprite.texture.get_width() * monster_sprite.pixel_size * 0.5
+	))
+	assert(is_equal_approx(
+		actor_capsule.radius / World25D.CELL_SIZE,
+		game._actor_collision_radius("monster")
+	))
 	assert(is_equal_approx(
 		monster_sprite.position.y,
 		monster_sprite.texture.get_height() * monster_sprite.pixel_size * 0.5
 	))
+	var furniture_data := {
+		"id": "collision-crate",
+		"kind": "木箱",
+		"pos": Vector2(2.5, 2.5),
+		"rotation": 0.0,
+	}
+	renderer._create_furniture_node(Vector2i.ZERO, furniture_data)
+	var furniture_node: Node3D = renderer.furniture_nodes["collision-crate"]
+	var furniture_sprite := furniture_node.get_node("PaperSprite") as Sprite3D
+	var furniture_body := furniture_node.get_node("CollisionBody") as StaticBody3D
+	var furniture_collision := furniture_body.get_node("CollisionShape3D") as CollisionShape3D
+	var furniture_box := furniture_collision.shape as BoxShape3D
+	assert(furniture_sprite.alpha_cut == SpriteBase3D.ALPHA_CUT_OPAQUE_PREPASS)
+	assert(furniture_box.size == renderer._furniture_info("木箱")["size"])
 
 	renderer._sync_actor(monster_actor, {
 		"room": Vector2i.ZERO,

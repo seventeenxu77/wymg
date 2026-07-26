@@ -8,6 +8,8 @@ const MAP_SIZE := 6
 const ROOM_SIZE := 5.0
 const ACTOR_SPEED := 4.0
 const ACTOR_COLLISION_RADIUS := 0.25
+const MONSTER_COLLISION_RADIUS := 576.0 * 0.00263 * 0.5 / WORLD_25D_SCRIPT.CELL_SIZE
+const THIEF_COLLISION_RADIUS := 384.0 * 0.00270 * 0.5 / WORLD_25D_SCRIPT.CELL_SIZE
 const FURNITURE_SPEED := 2.0
 const ROTATION_SPEED := 90.0
 const ROTATION_STEP := 4.0
@@ -956,7 +958,7 @@ func _move_actor_axis(role: String, motion: Vector2) -> void:
 		var blocked := (
 			next_furniture.x < 0.28 or next_furniture.y < 0.28
 			or next_furniture.x > ROOM_SIZE - 0.28 or next_furniture.y > ROOM_SIZE - 0.28
-			or not _position_clears_room_walls(room, next_actor)
+			or not _position_clears_room_walls(room, next_actor, role)
 		)
 		for other in room["furniture"]:
 			if other["id"] == held["id"]:
@@ -997,12 +999,12 @@ func _move_actor_axis(role: String, motion: Vector2) -> void:
 		if target_pos.y >= ROOM_SIZE: target_pos.y -= ROOM_SIZE
 
 	var target_room_data := _room_at(target_room)
-	if not _position_clears_room_walls(target_room_data, target_pos):
+	if not _position_clears_room_walls(target_room_data, target_pos, role):
 		return
 	for furniture in target_room_data["furniture"]:
 		if bool(furniture.get("destroyed", false)):
 			continue
-		if _actor_overlaps_furniture(target_pos, furniture):
+		if _actor_overlaps_furniture(target_pos, furniture, role):
 			return
 	actor["room"] = target_room
 	actor["pos"] = target_pos
@@ -1013,29 +1015,35 @@ func _move_actor_axis(role: String, motion: Vector2) -> void:
 		_reveal_thief(actor)
 
 
-func _position_clears_room_walls(room: Dictionary, pos: Vector2) -> bool:
+func _actor_collision_radius(role: String) -> float:
+	return MONSTER_COLLISION_RADIUS if role == "monster" else THIEF_COLLISION_RADIUS
+
+
+func _position_clears_room_walls(room: Dictionary, pos: Vector2, role := "") -> bool:
 	var doors: Array = room["doors"]
+	var collision_radius := ACTOR_COLLISION_RADIUS if role == "" else _actor_collision_radius(role)
 	var door_center_limit := (
 		WORLD_25D_SCRIPT.DOOR_GAP / (2.0 * WORLD_25D_SCRIPT.CELL_SIZE)
-		- ACTOR_COLLISION_RADIUS
+		- collision_radius
 	)
-	if pos.x < ACTOR_COLLISION_RADIUS:
+	if pos.x < collision_radius:
 		if not doors.has("left") or absf(pos.y - ROOM_SIZE * 0.5) > door_center_limit:
 			return false
-	if pos.x > ROOM_SIZE - ACTOR_COLLISION_RADIUS:
+	if pos.x > ROOM_SIZE - collision_radius:
 		if not doors.has("right") or absf(pos.y - ROOM_SIZE * 0.5) > door_center_limit:
 			return false
-	if pos.y < ACTOR_COLLISION_RADIUS:
+	if pos.y < collision_radius:
 		if not doors.has("up") or absf(pos.x - ROOM_SIZE * 0.5) > door_center_limit:
 			return false
-	if pos.y > ROOM_SIZE - ACTOR_COLLISION_RADIUS:
+	if pos.y > ROOM_SIZE - collision_radius:
 		if not doors.has("down") or absf(pos.x - ROOM_SIZE * 0.5) > door_center_limit:
 			return false
 	return true
 
 
-func _actor_overlaps_furniture(actor_pos: Vector2, furniture: Dictionary) -> bool:
+func _actor_overlaps_furniture(actor_pos: Vector2, furniture: Dictionary, role := "") -> bool:
 	var half_extents := _furniture_half_extents(str(furniture["kind"]))
+	var collision_radius := ACTOR_COLLISION_RADIUS if role == "" else _actor_collision_radius(role)
 	var local_pos := (
 		actor_pos - (furniture["pos"] as Vector2)
 	).rotated(-deg_to_rad(float(furniture["rotation"])))
@@ -1043,7 +1051,7 @@ func _actor_overlaps_furniture(actor_pos: Vector2, furniture: Dictionary) -> boo
 		clampf(local_pos.x, -half_extents.x, half_extents.x),
 		clampf(local_pos.y, -half_extents.y, half_extents.y),
 	)
-	return local_pos.distance_squared_to(closest) < ACTOR_COLLISION_RADIUS * ACTOR_COLLISION_RADIUS
+	return local_pos.distance_squared_to(closest) < collision_radius * collision_radius
 
 
 func _furniture_half_extents(kind: String) -> Vector2:
@@ -1566,10 +1574,10 @@ func _device_position(role: String, forward_distance := 0.42) -> Vector2:
 	var facing: Vector2 = actor.get("facing", _direction_vector(str(actor["dir"])))
 	var target: Vector2 = actor["pos"] + facing.normalized() * forward_distance
 	var room := _room_at(actor["room"])
-	if not _position_clears_room_walls(room, target):
+	if not _position_clears_room_walls(room, target, role):
 		return actor["pos"]
 	for furniture in room["furniture"]:
-		if not bool(furniture.get("destroyed", false)) and _actor_overlaps_furniture(target, furniture):
+		if not bool(furniture.get("destroyed", false)) and _actor_overlaps_furniture(target, furniture, role):
 			return actor["pos"]
 	return target
 
