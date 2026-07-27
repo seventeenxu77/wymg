@@ -12,31 +12,25 @@ const TRAP_ESCAPE_PRESSES := 20
 const PICKUP_DISTANCE := 0.64
 const MATCH_ROUNDS := 4
 
-const VIEWPORT_FRAME_TEXTURE: Texture2D = preload("res://assets/ui/viewport_frame.png")
-const CENTER_DIVIDER_TEXTURE: Texture2D = preload("res://assets/ui/center_divider.png")
+const VIEWPORT_FRAME_TEXTURE: Texture2D = preload("res://assets/ui/viewport_frame_handdrawn.png")
 const HEADER_PLAQUE_TEXTURE: Texture2D = preload("res://assets/ui/header_plaque.png")
-const MINIMAP_FRAME_TEXTURE: Texture2D = preload("res://assets/ui/minimap_frame.png")
+const MINIMAP_FRAME_TEXTURE: Texture2D = preload("res://assets/ui/minimap_frame_wood.png")
 const INVENTORY_TRAY_TEXTURE: Texture2D = preload("res://assets/ui/inventory_tray.png")
 const INVENTORY_SLOT_TEXTURE: Texture2D = preload("res://assets/ui/inventory_slot.png")
 const BUTTON_FRAME_TEXTURE: Texture2D = preload("res://assets/ui/button_frame.png")
 const SQUARE_BUTTON_TEXTURE: Texture2D = preload("res://assets/ui/square_button.png")
 const MODAL_PANEL_TEXTURE: Texture2D = preload("res://assets/ui/modal_panel.png")
+const HUD_HELP_BADGE_TEXTURE: Texture2D = preload("res://assets/ui/hud/hud_help_badge.png")
+const HUD_END_BADGE_TEXTURE: Texture2D = preload("res://assets/ui/hud/hud_end_badge.png")
+const HUD_SETTLEMENT_BADGE_TEXTURE: Texture2D = preload("res://assets/ui/hud/hud_settlement_badge.png")
+const MAIN_MENU_TITLE_FONT: Font = preload("res://assets/fonts/MaShanZheng-Regular.ttf")
 const COPPER_COIN_TEXTURE: Texture2D = preload("res://GJGamejam素材/2.5D物品/copper_coin.png")
 const MAIN_MENU_BACKGROUND_TEXTURE: Texture2D = preload("res://assets/ui/main_menu/menu_background.png")
-const MAIN_MENU_FRAME_TEXTURE: Texture2D = preload("res://assets/ui/main_menu/menu_frame.png")
-const MAIN_MENU_LOGO_TEXTURE: Texture2D = preload("res://assets/ui/main_menu/deep_seek_logo.png")
-const MAIN_MENU_PLAQUE_TEXTURE: Texture2D = preload("res://assets/ui/main_menu/button_plaque.png")
 const MAIN_MENU_ITEM_TEXTURES := {
-	"start": preload("res://assets/ui/main_menu/start_lantern.png"),
-	"settings": preload("res://assets/ui/main_menu/settings_astrolabe.png"),
-	"tutorial": preload("res://assets/ui/main_menu/tutorial_book.png"),
-	"exit": preload("res://assets/ui/main_menu/exit_door_key.png"),
-}
-const MAIN_MENU_ITEM_OUTLINES := {
-	"start": preload("res://assets/ui/main_menu/start_lantern_outline.png"),
-	"settings": preload("res://assets/ui/main_menu/settings_astrolabe_outline.png"),
-	"tutorial": preload("res://assets/ui/main_menu/tutorial_book_outline.png"),
-	"exit": preload("res://assets/ui/main_menu/exit_door_key_outline.png"),
+	"start": preload("res://assets/ui/main_menu/menu_start_badge.png"),
+	"settings": preload("res://assets/ui/main_menu/menu_settings_badge.png"),
+	"tutorial": preload("res://assets/ui/main_menu/menu_tutorial_badge.png"),
+	"exit": preload("res://assets/ui/main_menu/menu_exit_badge.png"),
 }
 
 const TOOL_ICON_TEXTURES := {
@@ -69,10 +63,17 @@ const FLOOR_DARK := Color("#63685f")
 const GOLD_COLOR := Color("#e6cc64")
 const HIT_FLASH_DELAY := 0.06
 const HIT_FLASH_SECONDS := 0.34
+const MAIN_MENU_ACTION_ORDER := ["start", "settings", "tutorial", "exit"]
+const MAIN_MENU_SLAM_IMPACT_SECONDS := 0.13
+const MAIN_MENU_SLAM_DURATION := 0.46
+const MAIN_MENU_SHAKE_DURATION := 0.32
 
 var game: Node
 var font: Font
 var viewport_frame_style: StyleBoxTexture
+var room_header_style: StyleBoxTexture
+var toolbelt_tray_style: StyleBoxTexture
+var toolbelt_slot_style: StyleBoxTexture
 var header_plaque_style: StyleBoxTexture
 var minimap_frame_style: StyleBoxTexture
 var inventory_tray_style: StyleBoxTexture
@@ -85,7 +86,12 @@ var main_menu_hover_amounts := {
 	"tutorial": 0.0,
 	"exit": 0.0,
 }
-var main_menu_last_draw_msec := 0
+var main_menu_ui_time := 0.0
+var main_menu_observed_focus := -1
+var main_menu_slam_action := ""
+var main_menu_slam_started_at := -100.0
+var main_menu_shake_started_at := -100.0
+var main_menu_draw_offset := Vector2.ZERO
 
 var TREASURES: Array:
 	get: return game.TREASURES
@@ -193,7 +199,11 @@ var world_25d: World25D:
 func setup(host: Node) -> void:
 	game = host
 	font = ThemeDB.fallback_font
-	viewport_frame_style = _make_texture_style(VIEWPORT_FRAME_TEXTURE, 54.0, 46.0, false)
+	texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
+	viewport_frame_style = _make_texture_style(VIEWPORT_FRAME_TEXTURE, 74.0, 68.0, false)
+	room_header_style = _make_texture_style(VIEWPORT_FRAME_TEXTURE, 74.0, 68.0)
+	toolbelt_tray_style = _make_texture_style(VIEWPORT_FRAME_TEXTURE, 74.0, 68.0)
+	toolbelt_slot_style = _make_texture_style(VIEWPORT_FRAME_TEXTURE, 74.0, 68.0)
 	header_plaque_style = _make_texture_style(HEADER_PLAQUE_TEXTURE, 58.0, 30.0)
 	minimap_frame_style = _make_texture_style(MINIMAP_FRAME_TEXTURE, 42.0, 42.0, false)
 	inventory_tray_style = _make_texture_style(INVENTORY_TRAY_TEXTURE, 72.0, 32.0)
@@ -220,8 +230,10 @@ func _make_texture_style(
 	return style
 
 
-func _process(_delta: float) -> void:
+func _process(delta: float) -> void:
 	if game:
+		main_menu_ui_time += delta
+		_update_main_menu_animation(delta)
 		queue_redraw()
 
 
@@ -278,7 +290,11 @@ func _draw() -> void:
 		_draw_tutorial_transition(size)
 		return
 	if bool(main_menu_open):
+		main_menu_draw_offset = _main_menu_screen_shake()
+		draw_set_transform(main_menu_draw_offset, 0.0, Vector2.ONE)
 		_draw_main_menu(size)
+		draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
+		main_menu_draw_offset = Vector2.ZERO
 		if bool(gm_console_open):
 			_draw_gm_console(size)
 		return
@@ -303,58 +319,38 @@ func _draw_main_menu(size: Vector2) -> void:
 	draw_texture_rect(MAIN_MENU_BACKGROUND_TEXTURE, screen_rect, false)
 
 	var ui_scale := minf(size.x / 1600.0, size.y / 900.0)
-	var logo_width := minf(size.x * 0.57, 760.0 * ui_scale)
-	var logo_ratio := (
-		float(MAIN_MENU_LOGO_TEXTURE.get_height())
-		/ float(MAIN_MENU_LOGO_TEXTURE.get_width())
+	draw_rect(
+		Rect2(Vector2.ZERO, Vector2(size.x, 276.0 * ui_scale)),
+		Color(0.015, 0.012, 0.011, 0.30),
 	)
-	var logo_size := Vector2(logo_width, logo_width * logo_ratio)
-	var logo_rect := Rect2(
-		Vector2((size.x - logo_size.x) * 0.5, 34.0 * ui_scale),
-		logo_size,
+	draw_rect(
+		Rect2(Vector2(0.0, size.y * 0.76), Vector2(size.x, size.y * 0.24)),
+		Color(0.01, 0.008, 0.007, 0.26),
 	)
-	draw_texture_rect(MAIN_MENU_LOGO_TEXTURE, logo_rect, false)
+	_draw_main_menu_title(size, ui_scale)
 
-	var now_msec := Time.get_ticks_msec()
-	var frame_delta := 1.0 / 60.0
-	if main_menu_last_draw_msec > 0:
-		frame_delta = clampf(
-			float(now_msec - main_menu_last_draw_msec) / 1000.0,
-			0.0,
-			0.05,
-		)
-	main_menu_last_draw_msec = now_msec
-
-	var baseline := size.y * 0.755
-	var plaque_y := size.y * 0.815
+	var baseline := size.y * 0.700
+	var plaque_y := baseline + 18.0 * ui_scale
 	var entries := [
 		{
 			"id": "start",
 			"label": "开始比赛",
-			"x": 0.17,
-			"height": 365.0,
-			"plaque_width": 250.0,
+			"x": 0.18,
 		},
 		{
 			"id": "settings",
-			"label": "设置",
-			"x": 0.39,
-			"height": 320.0,
-			"plaque_width": 210.0,
+			"label": "游戏设置",
+			"x": 0.395,
 		},
 		{
 			"id": "tutorial",
-			"label": "教程",
-			"x": 0.63,
-			"height": 275.0,
-			"plaque_width": 210.0,
+			"label": "新手教程",
+			"x": 0.61,
 		},
 		{
 			"id": "exit",
 			"label": "退出游戏",
-			"x": 0.84,
-			"height": 300.0,
-			"plaque_width": 220.0,
+			"x": 0.825,
 		},
 	]
 	main_menu_rects.clear()
@@ -363,15 +359,15 @@ func _draw_main_menu(size: Vector2) -> void:
 		var action := str(entry["id"])
 		var texture: Texture2D = MAIN_MENU_ITEM_TEXTURES[action]
 		var texture_size := Vector2(texture.get_width(), texture.get_height())
-		var item_height := float(entry["height"]) * ui_scale
+		var item_height := 350.0 * ui_scale
 		var item_size := Vector2(item_height * texture_size.x / texture_size.y, item_height)
 		var center_x := size.x * float(entry["x"])
 		var item_rect := Rect2(
 			Vector2(center_x - item_size.x * 0.5, baseline - item_size.y),
 			item_size,
 		)
-		var plaque_width := float(entry["plaque_width"]) * ui_scale
-		var plaque_height := 60.0 * ui_scale
+		var plaque_width := 246.0 * ui_scale
+		var plaque_height := 58.0 * ui_scale
 		var plaque_rect := Rect2(
 			Vector2(center_x - plaque_width * 0.5, plaque_y),
 			Vector2(plaque_width, plaque_height),
@@ -380,15 +376,16 @@ func _draw_main_menu(size: Vector2) -> void:
 		if main_menu_panel == "root":
 			main_menu_rects[action] = hit_rect
 		var selected := main_menu_panel == "root" and main_menu_selected == entry_index
-		var hover_target := 1.0 if selected else 0.0
-		main_menu_hover_amounts[action] = move_toward(
-			float(main_menu_hover_amounts[action]),
-			hover_target,
-			frame_delta * 7.5,
-		)
 		var hover := smoothstep(0.0, 1.0, float(main_menu_hover_amounts[action]))
-		var lift := 13.0 * ui_scale * hover
-		var item_scale := 1.0 + 0.035 * hover
+		var lift := 18.0 * ui_scale * hover
+		var item_scale := Vector2.ONE * (1.0 + 0.035 * hover)
+		var tilt_sign := -1.0 if entry_index % 2 == 0 else 1.0
+		var tilt := deg_to_rad(3.6) * tilt_sign * hover
+		var slam_age := main_menu_ui_time - main_menu_slam_started_at
+		if action == main_menu_slam_action and slam_age < MAIN_MENU_SLAM_DURATION:
+			lift = _main_menu_slam_lift(slam_age) * ui_scale
+			item_scale *= _main_menu_slam_scale(slam_age)
+			tilt = _main_menu_slam_tilt(slam_age, tilt_sign)
 		var animated_size := item_rect.size * item_scale
 		var animated_rect := Rect2(
 			Vector2(
@@ -400,36 +397,470 @@ func _draw_main_menu(size: Vector2) -> void:
 		_draw_main_menu_shadow(
 			Vector2(center_x, baseline + 4.0 * ui_scale),
 			Vector2(
-				item_rect.size.x * (0.29 - 0.035 * hover),
-				9.0 * ui_scale * (1.0 - 0.25 * hover),
+				item_rect.size.x * (0.34 - 0.035 * hover),
+				10.0 * ui_scale * (1.0 - 0.25 * hover),
 			),
 			0.42 - 0.12 * hover,
 		)
 		if hover > 0.01:
-			var outline: Texture2D = MAIN_MENU_ITEM_OUTLINES[action]
-			draw_texture_rect(
-				outline,
-				animated_rect.grow(2.0 * ui_scale * hover),
-				false,
-				Color(1.0, 0.98, 0.86, 0.92 * hover),
-			)
-		draw_texture_rect(texture, animated_rect, false)
-		var plaque_tint := Color(1.0, 1.0, 1.0)
-		if hover > 0.0:
-			plaque_tint = Color(1.0, 0.96 + 0.04 * hover, 0.82 + 0.18 * hover)
-		draw_texture_rect(MAIN_MENU_PLAQUE_TEXTURE, plaque_rect, false, plaque_tint)
+			_draw_main_menu_corner_brackets(
+				animated_rect.grow(9.0 * ui_scale),
+				Color(0.92, 0.73, 0.33, 0.30 + 0.62 * hover),
+				ui_scale,
+		)
+		var item_tint := Color(1.0, 0.96 + 0.04 * hover, 0.86 + 0.14 * hover)
+		_draw_main_menu_item(
+			texture,
+			Vector2(center_x, baseline - lift),
+			animated_size,
+			tilt,
+			item_tint,
+		)
+		_draw_main_menu_label_plaque(plaque_rect, selected, hover, ui_scale)
 		_text_center(
 			str(entry["label"]),
 			plaque_rect,
-			maxi(16, roundi(24.0 * ui_scale)),
-			Color("#fff7dc") if selected else Color("#2a1b13"),
+			maxi(15, roundi(22.0 * ui_scale)),
+			Color("#fff1bd") if selected else Color("#d8c7a0"),
 		)
 
 	if main_menu_panel == "settings":
 		_draw_main_menu_settings(size, ui_scale)
 	elif main_menu_panel == "exit_confirm":
 		_draw_main_menu_exit_confirm(size, ui_scale)
-	draw_texture_rect(MAIN_MENU_FRAME_TEXTURE, screen_rect, false)
+	else:
+		_text_center(
+			"A / D 或方向键选择　·　Enter / 空格确认",
+			Rect2(Vector2(0.0, size.y - 52.0 * ui_scale), Vector2(size.x, 24.0 * ui_scale)),
+			maxi(10, roundi(13.0 * ui_scale)),
+			Color("#9c9078"),
+		)
+	_draw_main_menu_frame(size, ui_scale)
+
+
+func _draw_main_menu_title(size: Vector2, ui_scale: float) -> void:
+	var plaque_size := Vector2(620.0, 144.0) * ui_scale
+	var plaque := Rect2(
+		Vector2((size.x - plaque_size.x) * 0.5, 94.0 * ui_scale),
+		plaque_size,
+	)
+	var cut := 24.0 * ui_scale
+	var outer := PackedVector2Array([
+		plaque.position + Vector2(cut, 0.0),
+		Vector2(plaque.end.x - cut, plaque.position.y),
+		Vector2(plaque.end.x, plaque.position.y + cut),
+		plaque.end - Vector2(0.0, cut),
+		plaque.end - Vector2(cut, 0.0),
+		Vector2(plaque.position.x + cut, plaque.end.y),
+		Vector2(plaque.position.x, plaque.end.y - cut),
+		plaque.position + Vector2(0.0, cut),
+	])
+	var shadow_points := PackedVector2Array()
+	for point in outer:
+		shadow_points.append(point + Vector2(0.0, 8.0 * ui_scale))
+	draw_colored_polygon(shadow_points, Color(0.0, 0.0, 0.0, 0.56))
+	draw_colored_polygon(outer, Color("#17110e"))
+	draw_polyline(
+		PackedVector2Array(Array(outer) + [outer[0]]),
+		Color("#8f6b35"),
+		maxf(2.0, 4.0 * ui_scale),
+	)
+	var inner := plaque.grow(-10.0 * ui_scale)
+	draw_rect(inner, Color("#261a13"))
+	draw_rect(inner, Color("#4f3621"), false, maxf(1.0, 2.0 * ui_scale))
+	draw_line(
+		Vector2(inner.position.x + 36.0 * ui_scale, inner.position.y + 12.0 * ui_scale),
+		Vector2(inner.end.x - 36.0 * ui_scale, inner.position.y + 12.0 * ui_scale),
+		Color("#5f4528"),
+		maxf(1.0, 2.0 * ui_scale),
+	)
+	draw_line(
+		Vector2(inner.position.x + 74.0 * ui_scale, inner.end.y - 18.0 * ui_scale),
+		Vector2(inner.end.x - 74.0 * ui_scale, inner.end.y - 18.0 * ui_scale),
+		Color("#5f4528"),
+		maxf(1.0, 2.0 * ui_scale),
+	)
+	_text_center_with_shadow(
+		"藏金匿影",
+		Rect2(
+			plaque.position + Vector2(0.0, 13.0 * ui_scale),
+			Vector2(plaque.size.x, 62.0 * ui_scale),
+		),
+		maxi(32, roundi(48.0 * ui_scale)),
+		Color("#efd58a"),
+		Color("#080706"),
+		maxf(1.5, 2.5 * ui_scale),
+		MAIN_MENU_TITLE_FONT,
+	)
+	_text_center(
+		"GOLD IN SHADOW",
+		Rect2(
+			plaque.position + Vector2(0.0, 84.0 * ui_scale),
+			Vector2(plaque.size.x, 28.0 * ui_scale),
+		),
+		maxi(11, roundi(15.0 * ui_scale)),
+		Color("#b9a278"),
+	)
+
+
+func _update_main_menu_animation(delta: float) -> void:
+	if not bool(main_menu_open) or main_menu_panel != "root":
+		main_menu_observed_focus = -1
+		main_menu_slam_action = ""
+		for action in MAIN_MENU_ACTION_ORDER:
+			main_menu_hover_amounts[action] = move_toward(
+				float(main_menu_hover_amounts[action]),
+				0.0,
+				delta * 8.0,
+			)
+		return
+	var focus := clampi(int(main_menu_selected), 0, MAIN_MENU_ACTION_ORDER.size() - 1)
+	if main_menu_observed_focus < 0:
+		main_menu_observed_focus = focus
+	elif focus != main_menu_observed_focus:
+		main_menu_slam_action = str(MAIN_MENU_ACTION_ORDER[main_menu_observed_focus])
+		main_menu_slam_started_at = main_menu_ui_time
+		main_menu_shake_started_at = main_menu_ui_time + MAIN_MENU_SLAM_IMPACT_SECONDS
+		main_menu_observed_focus = focus
+	for index in range(MAIN_MENU_ACTION_ORDER.size()):
+		var action := str(MAIN_MENU_ACTION_ORDER[index])
+		main_menu_hover_amounts[action] = move_toward(
+			float(main_menu_hover_amounts[action]),
+			1.0 if index == focus else 0.0,
+			delta * 7.5,
+		)
+	if (
+		main_menu_slam_action != ""
+		and main_menu_ui_time - main_menu_slam_started_at >= MAIN_MENU_SLAM_DURATION
+	):
+		main_menu_slam_action = ""
+
+
+func _main_menu_slam_lift(age: float) -> float:
+	if age <= 0.0:
+		return 18.0
+	if age < MAIN_MENU_SLAM_IMPACT_SECONDS:
+		var fall_t := age / MAIN_MENU_SLAM_IMPACT_SECONDS
+		return lerpf(18.0, -8.0, fall_t * fall_t * fall_t)
+	if age < 0.25:
+		var rebound_t := (age - MAIN_MENU_SLAM_IMPACT_SECONDS) / (
+			0.25 - MAIN_MENU_SLAM_IMPACT_SECONDS
+		)
+		return lerpf(-8.0, 5.0, sin(rebound_t * PI * 0.5))
+	var settle_t := clampf((age - 0.25) / (MAIN_MENU_SLAM_DURATION - 0.25), 0.0, 1.0)
+	return lerpf(5.0, 0.0, smoothstep(0.0, 1.0, settle_t))
+
+
+func _main_menu_slam_scale(age: float) -> Vector2:
+	var impact_distance := absf(age - MAIN_MENU_SLAM_IMPACT_SECONDS)
+	var squash := 1.0 - smoothstep(0.0, 1.0, clampf(impact_distance / 0.075, 0.0, 1.0))
+	return Vector2(1.0 + 0.075 * squash, 1.0 - 0.095 * squash)
+
+
+func _main_menu_slam_tilt(age: float, tilt_sign: float) -> float:
+	if age < MAIN_MENU_SLAM_IMPACT_SECONDS:
+		var fall_t := clampf(age / MAIN_MENU_SLAM_IMPACT_SECONDS, 0.0, 1.0)
+		return deg_to_rad(3.6) * tilt_sign * (1.0 - smoothstep(0.0, 1.0, fall_t))
+	var settle_t := clampf(
+		(age - MAIN_MENU_SLAM_IMPACT_SECONDS)
+		/ (MAIN_MENU_SLAM_DURATION - MAIN_MENU_SLAM_IMPACT_SECONDS),
+		0.0,
+		1.0,
+	)
+	return (
+		sin(settle_t * TAU * 1.5)
+		* deg_to_rad(4.2)
+		* tilt_sign
+		* (1.0 - settle_t)
+	)
+
+
+func _main_menu_screen_shake() -> Vector2:
+	var shake_age := main_menu_ui_time - main_menu_shake_started_at
+	if shake_age < 0.0 or shake_age >= MAIN_MENU_SHAKE_DURATION:
+		return Vector2.ZERO
+	var decay := 1.0 - shake_age / MAIN_MENU_SHAKE_DURATION
+	var ui_scale := minf(
+		get_viewport_rect().size.x / 1600.0,
+		get_viewport_rect().size.y / 900.0,
+	)
+	var amplitude := 14.0 * ui_scale * decay * decay
+	return Vector2(
+		sin(shake_age * 137.0) * amplitude,
+		cos(shake_age * 173.0) * amplitude * 0.72,
+	)
+
+
+func _draw_main_menu_item(
+	texture: Texture2D,
+	bottom_center: Vector2,
+	item_size: Vector2,
+	tilt: float,
+	tint: Color,
+) -> void:
+	draw_set_transform(bottom_center + main_menu_draw_offset, tilt, Vector2.ONE)
+	draw_texture_rect(
+		texture,
+		Rect2(Vector2(-item_size.x * 0.5, -item_size.y), item_size),
+		false,
+		tint,
+	)
+	draw_set_transform(main_menu_draw_offset, 0.0, Vector2.ONE)
+
+
+func _draw_main_menu_label_plaque(
+	rect: Rect2,
+	selected: bool,
+	hover: float,
+	ui_scale: float,
+) -> void:
+	var cut := 10.0 * ui_scale
+	var points := PackedVector2Array([
+		rect.position + Vector2(cut, 0.0),
+		Vector2(rect.end.x - cut, rect.position.y),
+		Vector2(rect.end.x, rect.position.y + cut),
+		rect.end - Vector2(0.0, cut),
+		rect.end - Vector2(cut, 0.0),
+		Vector2(rect.position.x + cut, rect.end.y),
+		Vector2(rect.position.x, rect.end.y - cut),
+		rect.position + Vector2(0.0, cut),
+	])
+	draw_colored_polygon(points, Color("#15110e"))
+	var border := Color("#d0a34e") if selected else Color("#654b2d")
+	draw_polyline(
+		PackedVector2Array(Array(points) + [points[0]]),
+		Color(border, 0.72 + 0.28 * hover),
+		maxf(1.0, (2.0 + hover) * ui_scale),
+	)
+	draw_rect(
+		rect.grow(-6.0 * ui_scale),
+		Color(0.48, 0.31, 0.14, 0.12 + 0.12 * hover),
+	)
+
+
+func _draw_main_menu_frame(size: Vector2, ui_scale: float) -> void:
+	var inset := maxf(7.0, 10.0 * ui_scale)
+	var rail := maxf(23.0, 30.0 * ui_scale)
+	var outer := Rect2(
+		Vector2(inset, inset),
+		size - Vector2.ONE * inset * 2.0,
+	)
+	var iron := Color("#19191a")
+	var iron_light := Color("#474441")
+	var wood_dark := Color("#24130f")
+	var wood_mid := Color("#4a281b")
+	var wood_light := Color("#73412a")
+	var brass := Color("#a7783d")
+	var shadow := maxf(4.0, 7.0 * ui_scale)
+
+	draw_rect(outer.grow(shadow), Color(0.0, 0.0, 0.0, 0.72), false, shadow)
+	var top_rail := Rect2(outer.position, Vector2(outer.size.x, rail))
+	var bottom_rail := Rect2(
+		Vector2(outer.position.x, outer.end.y - rail),
+		Vector2(outer.size.x, rail),
+	)
+	var left_rail := Rect2(outer.position, Vector2(rail, outer.size.y))
+	var right_rail := Rect2(
+		Vector2(outer.end.x - rail, outer.position.y),
+		Vector2(rail, outer.size.y),
+	)
+	for frame_rail in [top_rail, bottom_rail, left_rail, right_rail]:
+		draw_rect(frame_rail, iron)
+		draw_rect(frame_rail.grow(-4.0 * ui_scale), wood_dark)
+
+	var strip := maxf(3.0, 5.0 * ui_scale)
+	draw_rect(
+		Rect2(
+			top_rail.position + Vector2(rail, strip),
+			Vector2(top_rail.size.x - rail * 2.0, rail - strip * 2.0),
+		),
+		wood_mid,
+	)
+	draw_rect(
+		Rect2(
+			bottom_rail.position + Vector2(rail, strip),
+			Vector2(bottom_rail.size.x - rail * 2.0, rail - strip * 2.0),
+		),
+		wood_mid,
+	)
+	draw_rect(
+		Rect2(
+			left_rail.position + Vector2(strip, rail),
+			Vector2(rail - strip * 2.0, left_rail.size.y - rail * 2.0),
+		),
+		wood_mid,
+	)
+	draw_rect(
+		Rect2(
+			right_rail.position + Vector2(strip, rail),
+			Vector2(rail - strip * 2.0, right_rail.size.y - rail * 2.0),
+		),
+		wood_mid,
+	)
+
+	var highlight := maxf(1.0, 2.0 * ui_scale)
+	draw_line(
+		Vector2(top_rail.position.x + rail, top_rail.position.y + strip),
+		Vector2(top_rail.end.x - rail, top_rail.position.y + strip),
+		wood_light,
+		highlight,
+	)
+	draw_line(
+		Vector2(bottom_rail.position.x + rail, bottom_rail.position.y + strip),
+		Vector2(bottom_rail.end.x - rail, bottom_rail.position.y + strip),
+		wood_light,
+		highlight,
+	)
+	draw_line(
+		Vector2(left_rail.position.x + strip, left_rail.position.y + rail),
+		Vector2(left_rail.position.x + strip, left_rail.end.y - rail),
+		wood_light,
+		highlight,
+	)
+	draw_line(
+		Vector2(right_rail.position.x + strip, right_rail.position.y + rail),
+		Vector2(right_rail.position.x + strip, right_rail.end.y - rail),
+		wood_light,
+		highlight,
+	)
+
+	var inner := outer.grow(-rail + 2.0 * ui_scale)
+	draw_rect(inner, Color("#080706"), false, maxf(3.0, 5.0 * ui_scale))
+	draw_rect(inner.grow(-4.0 * ui_scale), brass, false, maxf(1.0, 2.0 * ui_scale))
+
+	var corner_size := maxf(52.0, 66.0 * ui_scale)
+	_draw_main_menu_frame_corner(
+		Rect2(outer.position, Vector2.ONE * corner_size),
+		ui_scale,
+	)
+	_draw_main_menu_frame_corner(
+		Rect2(
+			Vector2(outer.end.x - corner_size, outer.position.y),
+			Vector2.ONE * corner_size,
+		),
+		ui_scale,
+	)
+	_draw_main_menu_frame_corner(
+		Rect2(
+			Vector2(outer.position.x, outer.end.y - corner_size),
+			Vector2.ONE * corner_size,
+		),
+		ui_scale,
+	)
+	_draw_main_menu_frame_corner(
+		Rect2(outer.end - Vector2.ONE * corner_size, Vector2.ONE * corner_size),
+		ui_scale,
+	)
+
+	var clamp_width := maxf(12.0, 16.0 * ui_scale)
+	for fraction in [0.25, 0.75]:
+		var x := lerpf(outer.position.x + corner_size, outer.end.x - corner_size, fraction)
+		_draw_main_menu_frame_clamp(
+			Rect2(
+				Vector2(x - clamp_width * 0.5, outer.position.y),
+				Vector2(clamp_width, rail),
+			),
+			ui_scale,
+		)
+		_draw_main_menu_frame_clamp(
+			Rect2(
+				Vector2(x - clamp_width * 0.5, outer.end.y - rail),
+				Vector2(clamp_width, rail),
+			),
+			ui_scale,
+		)
+	for fraction in [0.34, 0.66]:
+		var y := lerpf(outer.position.y + corner_size, outer.end.y - corner_size, fraction)
+		_draw_main_menu_frame_clamp(
+			Rect2(
+				Vector2(outer.position.x, y - clamp_width * 0.5),
+				Vector2(rail, clamp_width),
+			),
+			ui_scale,
+		)
+		_draw_main_menu_frame_clamp(
+			Rect2(
+				Vector2(outer.end.x - rail, y - clamp_width * 0.5),
+				Vector2(rail, clamp_width),
+			),
+			ui_scale,
+		)
+
+
+func _draw_main_menu_frame_corner(rect: Rect2, ui_scale: float) -> void:
+	var cut := maxf(7.0, 10.0 * ui_scale)
+	var points := PackedVector2Array([
+		rect.position + Vector2(cut, 0.0),
+		Vector2(rect.end.x - cut, rect.position.y),
+		Vector2(rect.end.x, rect.position.y + cut),
+		rect.end - Vector2(0.0, cut),
+		rect.end - Vector2(cut, 0.0),
+		Vector2(rect.position.x + cut, rect.end.y),
+		Vector2(rect.position.x, rect.end.y - cut),
+		rect.position + Vector2(0.0, cut),
+	])
+	draw_colored_polygon(points, Color("#171719"))
+	draw_polyline(
+		PackedVector2Array(Array(points) + [points[0]]),
+		Color("#5a554e"),
+		maxf(2.0, 3.0 * ui_scale),
+	)
+	var plate := rect.grow(-12.0 * ui_scale)
+	draw_rect(plate, Color("#302d2a"))
+	draw_rect(plate, Color("#8c6737"), false, maxf(1.0, 2.0 * ui_scale))
+	draw_circle(
+		rect.get_center(),
+		maxf(3.0, 5.0 * ui_scale),
+		Color("#a77a3d"),
+	)
+	draw_circle(
+		rect.get_center(),
+		maxf(1.0, 2.0 * ui_scale),
+		Color("#211713"),
+	)
+
+
+func _draw_main_menu_frame_clamp(rect: Rect2, ui_scale: float) -> void:
+	draw_rect(rect, Color("#171719"))
+	draw_rect(rect.grow(-3.0 * ui_scale), Color("#44413d"))
+	draw_circle(
+		rect.get_center(),
+		maxf(1.5, 2.5 * ui_scale),
+		Color("#9b713a"),
+	)
+
+
+func _draw_main_menu_corner_brackets(rect: Rect2, color: Color, ui_scale: float) -> void:
+	var length := 30.0 * ui_scale
+	var width := maxf(2.0, 3.0 * ui_scale)
+	draw_line(rect.position, rect.position + Vector2(length, 0.0), color, width)
+	draw_line(rect.position, rect.position + Vector2(0.0, length), color, width)
+	draw_line(
+		Vector2(rect.end.x, rect.position.y),
+		Vector2(rect.end.x - length, rect.position.y),
+		color,
+		width,
+	)
+	draw_line(
+		Vector2(rect.end.x, rect.position.y),
+		Vector2(rect.end.x, rect.position.y + length),
+		color,
+		width,
+	)
+	draw_line(
+		Vector2(rect.position.x, rect.end.y),
+		Vector2(rect.position.x + length, rect.end.y),
+		color,
+		width,
+	)
+	draw_line(
+		Vector2(rect.position.x, rect.end.y),
+		Vector2(rect.position.x, rect.end.y - length),
+		color,
+		width,
+	)
+	draw_line(rect.end, rect.end - Vector2(length, 0.0), color, width)
+	draw_line(rect.end, rect.end - Vector2(0.0, length), color, width)
 
 
 func _draw_main_menu_settings(size: Vector2, ui_scale: float) -> void:
@@ -684,12 +1115,21 @@ func _calculate_layout(size: Vector2) -> Dictionary:
 
 
 func _draw_center_divider(size: Vector2) -> void:
-	var divider_width := 42.0
-	var divider := Rect2(
-		Vector2(size.x * 0.5 - divider_width * 0.5, 5.0),
-		Vector2(divider_width, size.y - 10.0),
+	var center_x := size.x * 0.5
+	var seam := PackedVector2Array(
+		[
+			Vector2(center_x - 4.0, 4.0),
+			Vector2(center_x + 5.0, 4.0),
+			Vector2(center_x + 3.0, size.y * 0.28),
+			Vector2(center_x + 6.0, size.y * 0.54),
+			Vector2(center_x + 2.0, size.y - 4.0),
+			Vector2(center_x - 5.0, size.y - 4.0),
+			Vector2(center_x - 2.0, size.y * 0.67),
+			Vector2(center_x - 6.0, size.y * 0.36),
+		]
 	)
-	draw_texture_rect(CENTER_DIVIDER_TEXTURE, divider, false)
+	draw_colored_polygon(seam, Color("#090a09"))
+	draw_polyline(seam, Color("#352c23"), 1.0)
 
 
 func _draw_button(rect: Rect2, label: String, secondary := false) -> void:
@@ -782,58 +1222,103 @@ func _draw_room_panel(panel: Rect2, room_rect: Rect2, role: String) -> void:
 	draw_line(footer.position, Vector2(footer.end.x, footer.position.y), LINE_COLOR, 1)
 	_draw_toolbelt(footer, role)
 	draw_style_box(viewport_frame_style, panel)
-	_draw_room_panel_header(panel, role, actor, accent)
+	_draw_room_panel_header(room_rect, role, accent)
 
 
-func _draw_room_panel_header(panel: Rect2, role: String, actor: Dictionary, accent: Color) -> void:
-	var plaque := Rect2(
-		panel.position + Vector2(48.0, 6.0),
-		Vector2(panel.size.x - 96.0, 46.0),
+func _draw_room_panel_header(room_rect: Rect2, role: String, accent: Color) -> void:
+	var ui_scale := clampf(room_rect.size.x / 640.0, 0.5, 1.0)
+	var inset := 10.0 * ui_scale
+	var top := room_rect.position.y + 9.0 * ui_scale
+	var right := room_rect.end.x - inset
+
+	var timer_size := Vector2(210.0, 38.0) * ui_scale
+	var timer_rect := Rect2(
+		Vector2(room_rect.get_center().x - timer_size.x * 0.5, top),
+		timer_size,
 	)
-	draw_style_box(header_plaque_style, plaque)
-	draw_line(
-		panel.position + Vector2(72.0, 9.0),
-		Vector2(panel.end.x - 72.0, panel.position.y + 9.0),
-		Color(accent, 0.78),
-		2.0,
+	_text_center_with_shadow(
+		_phase_short_label(),
+		timer_rect,
+		maxi(15, roundi(24.0 * ui_scale)),
+		Color("#fff2c8"),
+		Color(0.02, 0.015, 0.01, 0.94),
+		maxf(1.0, 2.0 * ui_scale),
 	)
-	_text(
-		"玩家%s · %s视角" % [_player_for_role(role), "怪物" if role == "monster" else "盗贼"],
-		panel.position + Vector2(72, 24),
-		10,
-		MUTED_COLOR,
+
+	var help_size := Vector2(72.0, 50.0) * ui_scale
+	var help_rect := Rect2(
+		Vector2(right - help_size.x, top),
+		help_size,
 	)
-	_text(
-		"房间 %d-%d · %s" % [actor["room"].x + 1, actor["room"].y + 1, _phase_short_label()],
-		panel.position + Vector2(72, 43),
-		14,
-		TEXT_COLOR,
-	)
-	var help_rect := Rect2(Vector2(panel.end.x - 78, panel.position.y + 13), Vector2(28, 28))
 	help_rects[role] = help_rect
-	_draw_square_button(help_rect, "?", accent)
+	_draw_hud_badge_button(HUD_HELP_BADGE_TEXTURE, help_rect, "帮助", accent)
+
 	var player := _player_for_role(role)
 	var opponent := "B" if player == "A" else "A"
 	var prospective_values: Dictionary = game._prospective_round_values()
 	var projected_coins: Dictionary = game._projected_player_coins()
-	var value_right := help_rect.position.x - 10.0
 	if role == "monster" and phase == "hide":
-		early_rect = Rect2(Vector2(help_rect.position.x - 126, panel.position.y + 13), Vector2(116, 28))
-		_draw_button(early_rect, "提前结束藏宝", true)
-		value_right = early_rect.position.x - 10.0
+		var end_size := Vector2(128.0, 50.0) * ui_scale
+		early_rect = Rect2(
+			Vector2(help_rect.position.x - 5.0 * ui_scale - end_size.x, top),
+			end_size,
+		)
+		_draw_hud_badge_button(HUD_END_BADGE_TEXTURE, early_rect, "结束藏宝", MONSTER_COLOR)
 	elif role == "monster":
 		early_rect = Rect2()
-	_text_right(
-		"己方结算后 %d金币 · 本局+%d" % [int(projected_coins[player]), int(prospective_values[player])],
-		Vector2(value_right, panel.position.y + 24.0),
-		10,
+
+	var settlement_size := Vector2(184.0, 68.0) * ui_scale
+	var settlement_rect := Rect2(
+		Vector2(
+			right - settlement_size.x,
+			top + help_size.y - 3.0 * ui_scale,
+		),
+		settlement_size,
+	)
+	draw_texture_rect(HUD_SETTLEMENT_BADGE_TEXTURE, settlement_rect, false)
+	var score_left := settlement_rect.position.x + 52.0 * ui_scale
+	_text(
+		"结算 · 己 %d（+%d）" % [
+			int(projected_coins[player]),
+			int(prospective_values[player]),
+		],
+		Vector2(score_left, settlement_rect.position.y + 29.0 * ui_scale),
+		maxi(7, roundi(10.0 * ui_scale)),
 		GOLD_COLOR,
 	)
-	_text_right(
-		"敌方结算后 %d金币 · 本局+%d" % [int(projected_coins[opponent]), int(prospective_values[opponent])],
-		Vector2(value_right, panel.position.y + 42.0),
-		10,
+	_text(
+		"敌 %d（+%d）" % [
+			int(projected_coins[opponent]),
+			int(prospective_values[opponent]),
+		],
+		Vector2(score_left, settlement_rect.position.y + 45.0 * ui_scale),
+		maxi(7, roundi(9.0 * ui_scale)),
 		MUTED_COLOR,
+	)
+
+
+func _draw_hud_badge_button(
+	texture: Texture2D,
+	rect: Rect2,
+	label: String,
+	accent: Color,
+) -> void:
+	var hovered := rect.has_point(get_viewport().get_mouse_position())
+	var pressed := hovered and Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT)
+	var draw_rect_value := rect
+	if pressed:
+		draw_rect_value.position.y += 1.5
+	draw_texture_rect(texture, draw_rect_value, false)
+	if hovered:
+		draw_rect(draw_rect_value.grow(-7.0), Color(accent, 0.12))
+	var text_rect := draw_rect_value.grow(-8.0)
+	text_rect.position.x += minf(draw_rect_value.size.x * 0.08, 10.0)
+	text_rect.size.x -= minf(draw_rect_value.size.x * 0.08, 10.0)
+	_text_center(
+		label,
+		text_rect,
+		maxi(8, roundi(12.0 * clampf(rect.size.y / 50.0, 0.65, 1.0))),
+		Color("#fff1cf") if hovered else TEXT_COLOR,
 	)
 
 
@@ -841,7 +1326,7 @@ func _draw_toolbelt(footer: Rect2, role: String) -> void:
 	var inventory: Array = tool_inventories[role]
 	var accent := MONSTER_COLOR if role == "monster" else THIEF_COLOR
 	var tray := footer.grow(-5.0)
-	draw_style_box(inventory_tray_style, tray)
+	draw_style_box(toolbelt_tray_style, tray)
 	_text("背包", tray.position + Vector2(24, 16), 9, Color("#c5b79e"))
 	var start := tray.position + Vector2(18, 21)
 	var gap := 6.0
@@ -849,7 +1334,7 @@ func _draw_toolbelt(footer: Rect2, role: String) -> void:
 	var slot_height := maxf(minf(tray.size.y - 27.0, 52.0), 36.0)
 	for index in range(TOOL_INVENTORY_CAPACITY):
 		var slot := Rect2(start + Vector2(index * (slot_width + gap), 0), Vector2(slot_width, slot_height))
-		draw_style_box(inventory_slot_style, slot)
+		draw_style_box(toolbelt_slot_style, slot)
 		var selected := index == int(tool_selected[role]) and index < inventory.size()
 		draw_rect(slot.grow(-5.0), Color(accent, 0.9) if selected else LINE_COLOR, false, 1.5)
 		if index >= inventory.size():
@@ -902,7 +1387,7 @@ func _draw_role_status(room_rect: Rect2, role: String) -> void:
 	if message == "":
 		return
 	var status_rect := Rect2(
-		Vector2(room_rect.get_center().x - 150, room_rect.position.y + 14),
+		Vector2(room_rect.get_center().x - 150, room_rect.position.y + 56),
 		Vector2(300, 32),
 	)
 	draw_style_box(header_plaque_style, status_rect)
@@ -1919,6 +2404,43 @@ func _text_center(text: String, rect: Rect2, size: int, color: Color) -> void:
 	var measured := font.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, size)
 	var baseline := rect.position + Vector2((rect.size.x - measured.x) / 2.0, (rect.size.y + measured.y * 0.65) / 2.0)
 	draw_string(font, baseline, text, HORIZONTAL_ALIGNMENT_LEFT, -1, size, color)
+
+
+func _text_center_with_shadow(
+	text: String,
+	rect: Rect2,
+	size: int,
+	color: Color,
+	shadow_color: Color,
+	offset: float,
+	text_font: Font = null,
+) -> void:
+	var draw_font: Font = text_font if text_font else font
+	var measured := draw_font.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, size)
+	var baseline := rect.position + Vector2(
+		(rect.size.x - measured.x) / 2.0,
+		(rect.size.y + measured.y * 0.65) / 2.0,
+	)
+	for direction in [
+		Vector2(-1.0, 0.0),
+		Vector2(1.0, 0.0),
+		Vector2(0.0, -1.0),
+		Vector2(0.0, 1.0),
+		Vector2(-1.0, -1.0),
+		Vector2(1.0, -1.0),
+		Vector2(-1.0, 1.0),
+		Vector2(1.0, 1.0),
+	]:
+		draw_string(
+			draw_font,
+			baseline + direction * offset,
+			text,
+			HORIZONTAL_ALIGNMENT_LEFT,
+			-1,
+			size,
+			shadow_color,
+		)
+	draw_string(draw_font, baseline, text, HORIZONTAL_ALIGNMENT_LEFT, -1, size, color)
 
 
 func _multiline(text: String, pos: Vector2, width: float, size: int, color: Color, line_height: float, alignment := HORIZONTAL_ALIGNMENT_LEFT) -> void:

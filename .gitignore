@@ -2,3 +2,8 @@
 .godot/
 /android/
 *.import
+
+# Local exports and generated verification output
+*.exe
+/artifacts/
+/tmp/

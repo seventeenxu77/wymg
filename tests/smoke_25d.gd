@@ -103,6 +103,12 @@ func _run() -> void:
 		var visual_info: Dictionary = renderer._item_visual_info(visual_case[0])
 		assert(str(visual_info["path"]).ends_with(str(visual_case[1])))
 		assert(ResourceLoader.exists(str(visual_info["path"])))
+	for hud_badge_path in [
+		"res://assets/ui/hud/hud_help_badge.png",
+		"res://assets/ui/hud/hud_end_badge.png",
+		"res://assets/ui/hud/hud_settlement_badge.png",
+	]:
+		assert(ResourceLoader.exists(hud_badge_path))
 	assert(game._furniture_durability("花瓶") == 1)
 	assert(game._furniture_durability("木桶") == 2)
 	assert(game._furniture_durability("木箱") == 3)
@@ -118,6 +124,22 @@ func _run() -> void:
 	assert(game.early_rect.has_area())
 	var actual_ui_layout: Dictionary = game._calculate_layout(game.get_viewport_rect().size)
 	assert(actual_ui_layout["monster_panel"].encloses(game.early_rect))
+	assert(actual_ui_layout["monster_room"].encloses(game.early_rect))
+	assert(actual_ui_layout["monster_room"].encloses(game.help_rects["monster"]))
+	assert(actual_ui_layout["thief_room"].encloses(game.help_rects["thief"]))
+	game.current_round = 2
+	game._start_round()
+	game.main_menu_open = false
+	game.queue_redraw()
+	await process_frame
+	assert(actual_ui_layout["thief_room"].encloses(game.early_rect))
+	assert(actual_ui_layout["thief_room"].encloses(game.help_rects["monster"]))
+	assert(actual_ui_layout["monster_room"].encloses(game.help_rects["thief"]))
+	game.current_round = 1
+	game._start_round()
+	game.main_menu_open = false
+	game.queue_redraw()
+	await process_frame
 	_press_key(game, KEY_F1, KEY_F1)
 	assert(bool(game.help_open["monster"]))
 	assert(not bool(game.help_open["thief"]))

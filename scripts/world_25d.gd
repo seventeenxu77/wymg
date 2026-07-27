@@ -21,6 +21,10 @@ const HIT_REACTION_DISTANCE := 0.34
 const ATTACK_ANIMATION_SECONDS := 0.55
 const FURNITURE_HIT_SHAKE_SECONDS := 0.52
 const INVALID_ROOM := Vector2i(-999, -999)
+const TRAP_STRUGGLE_CYCLE := 0.64
+const TRAP_STRUGGLE_ANGLE := 0.72
+const TRAP_KEY_UP_TEXTURE: Texture2D = preload("res://assets/ui/tutorial_key_up.svg")
+const TRAP_KEY_DOWN_TEXTURE: Texture2D = preload("res://assets/ui/tutorial_key_down.svg")
 
 const LAYER_MONSTER_WORLD := 1
 const LAYER_MONSTER := 2
@@ -826,18 +830,48 @@ func _create_actor(role: String, layer: int) -> Node3D:
 	var trap_prompt := Label3D.new()
 	trap_prompt.name = "TrapPrompt"
 	trap_prompt.text = ""
-	trap_prompt.font_size = 54
-	trap_prompt.pixel_size = 0.006
+	# Keep the Label3D as the prompt root for compatibility with existing
+	# scenes/tests. Its own text is hidden; the two tutorial-style keycaps below
+	# provide the visible prompt.
+	trap_prompt.font_size = 1
+	trap_prompt.pixel_size = 0.001
 	trap_prompt.position = Vector3(0.0, 0.10, 0.30)
-	trap_prompt.modulate = Color("#ff3b2f")
-	trap_prompt.outline_modulate = Color("#210504")
-	trap_prompt.outline_size = 9
+	trap_prompt.modulate = Color(1.0, 1.0, 1.0, 0.0)
+	trap_prompt.outline_modulate = Color(0.0, 0.0, 0.0, 0.0)
+	trap_prompt.outline_size = 0
 	trap_prompt.billboard = BaseMaterial3D.BILLBOARD_ENABLED
 	trap_prompt.no_depth_test = true
 	trap_prompt.visible = false
 	trap_prompt.layers = layer
 	actor.add_child(trap_prompt)
+	_add_trap_key_visual(trap_prompt, "Left", -0.23, layer)
+	_add_trap_key_visual(trap_prompt, "Right", 0.23, layer)
 	return actor
+
+
+func _add_trap_key_visual(prompt_root: Node3D, side: String, x: float, layer: int) -> void:
+	var keycap := Sprite3D.new()
+	keycap.name = "%sKey" % side
+	keycap.texture = TRAP_KEY_UP_TEXTURE
+	keycap.pixel_size = 0.0042
+	keycap.position = Vector3(x, 0.0, 0.0)
+	keycap.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	keycap.no_depth_test = true
+	keycap.render_priority = 20
+	keycap.layers = layer
+	prompt_root.add_child(keycap)
+
+	var key_label := Label3D.new()
+	key_label.name = "%sLabel" % side
+	key_label.font_size = 44
+	key_label.pixel_size = 0.0042
+	key_label.position = Vector3(x, 0.055, 0.01)
+	key_label.modulate = Color("#24241f")
+	key_label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	key_label.no_depth_test = true
+	key_label.render_priority = 21
+	key_label.layers = layer
+	prompt_root.add_child(key_label)
 
 
 func _foot_anchored_sprite_position(texture: Texture2D, pixel_size: float, foot_x: float) -> Vector3:
@@ -1304,13 +1338,13 @@ func _sync_actor(node: Node3D, actor: Dictionary, time: float, is_thief: bool) -
 	var hidden_alpha := 0.48 if is_thief and bool(actor.get("hidden_from_monster", false)) else 1.0
 	sprite.modulate = Color(brightness, brightness, brightness, hidden_alpha)
 	var trapped := bool(actor.get("trapped", false))
+	var trapped_age := maxf(time - float(actor.get("trapped_started_at", time)), 0.0)
 	var trap_prompt: Label3D = node.get_node_or_null("TrapPrompt")
 	if trap_prompt:
 		trap_prompt.visible = trapped
 		if trapped:
 			trap_prompt.text = str(actor.get("trap_prompt", ""))
-			var prompt_pulse := 0.5 + 0.5 * sin(time * 13.0)
-			trap_prompt.modulate = Color(1.0, 0.08, 0.04, lerpf(0.16, 1.0, prompt_pulse))
+			_sync_trap_key_prompt(trap_prompt, str(actor.get("trap_prompt", "")), trapped_age)
 	var phase_offset := 1.6 if is_thief else 0.0
 	var moving: bool = actor.get("moving", false)
 	var hit_age := time - float(actor.get("hit_reaction_started_at", -10.0))
@@ -1320,18 +1354,14 @@ func _sync_actor(node: Node3D, actor: Dictionary, time: float, is_thief: bool) -
 		pivot.position = Vector3.ZERO
 		pivot.rotation.z = PI * 0.5
 	elif trapped:
-		var trapped_age := maxf(time - float(actor.get("trapped_started_at", time)), 0.0)
-		var shake_x := sin(trapped_age * 52.0) * 0.15 + sin(trapped_age * 83.0) * 0.055
-		var shake_z := cos(trapped_age * 46.0) * 0.08
-		pivot.position = Vector3(shake_x, absf(sin(trapped_age * 31.0)) * 0.11, shake_z)
-		pivot.rotation.z = sin(trapped_age * 41.0) * 0.25
-		var red_pulse := 0.5 + 0.5 * sin(time * 17.0)
-		sprite.modulate = Color(
-			maxf(brightness, 0.78),
-			brightness * lerpf(0.12, 0.42, red_pulse),
-			brightness * lerpf(0.10, 0.30, red_pulse),
-			hidden_alpha,
-		)
+		# The paper cutout is already foot-anchored to this pivot. Keep that
+		# anchor fixed and snap left -> center -> right -> center around it.
+		pivot.position = Vector3.ZERO
+		pivot.rotation.z = _trap_struggle_angle(trapped_age)
+		var red_flash := pow(0.5 + 0.5 * sin(trapped_age * TAU * 5.0), 2.0)
+		var base_color := Color(brightness, brightness, brightness, hidden_alpha)
+		var danger_color := Color(1.0, 0.035, 0.025, hidden_alpha)
+		sprite.modulate = base_color.lerp(danger_color, lerpf(0.48, 0.96, red_flash))
 	elif is_thief and hit_age >= 0.0 and hit_age < HIT_REACTION_SECONDS:
 		var hit_t := clampf(hit_age / HIT_REACTION_SECONDS, 0.0, 1.0)
 		var kick := sin(hit_t * PI) * (1.0 - hit_t * 0.24)
@@ -1378,6 +1408,52 @@ func _sync_actor(node: Node3D, actor: Dictionary, time: float, is_thief: bool) -
 		# image away from the ground shadow.
 		pivot.position = Vector3.ZERO
 		pivot.rotation.z = sin(time * 2.5 + phase_offset) * 0.045
+
+
+func _trap_struggle_angle(trapped_age: float) -> float:
+	var cycle_t := fmod(trapped_age, TRAP_STRUGGLE_CYCLE) / TRAP_STRUGGLE_CYCLE
+	if cycle_t < 0.18:
+		return -TRAP_STRUGGLE_ANGLE * smoothstep(0.0, 1.0, cycle_t / 0.18)
+	if cycle_t < 0.46:
+		return -TRAP_STRUGGLE_ANGLE * (
+			1.0 - smoothstep(0.0, 1.0, (cycle_t - 0.18) / 0.28)
+		)
+	if cycle_t < 0.50:
+		return 0.0
+	if cycle_t < 0.68:
+		return TRAP_STRUGGLE_ANGLE * smoothstep(0.0, 1.0, (cycle_t - 0.50) / 0.18)
+	if cycle_t < 0.96:
+		return TRAP_STRUGGLE_ANGLE * (
+			1.0 - smoothstep(0.0, 1.0, (cycle_t - 0.68) / 0.28)
+		)
+	return 0.0
+
+
+func _sync_trap_key_prompt(prompt: Label3D, next_key: String, trapped_age: float) -> void:
+	var left_key: Sprite3D = prompt.get_node_or_null("LeftKey")
+	var right_key: Sprite3D = prompt.get_node_or_null("RightKey")
+	var left_label: Label3D = prompt.get_node_or_null("LeftLabel")
+	var right_label: Label3D = prompt.get_node_or_null("RightLabel")
+	if not left_key or not right_key or not left_label or not right_label:
+		return
+	var uses_wasd := next_key in ["A", "D"]
+	left_label.text = "A" if uses_wasd else "←"
+	right_label.text = "D" if uses_wasd else "→"
+	var left_pressed := fmod(trapped_age, TRAP_STRUGGLE_CYCLE) < TRAP_STRUGGLE_CYCLE * 0.5
+	_set_trap_key_state(left_key, left_label, left_pressed)
+	_set_trap_key_state(right_key, right_label, not left_pressed)
+
+
+func _set_trap_key_state(keycap: Sprite3D, key_label: Label3D, pressed: bool) -> void:
+	keycap.texture = TRAP_KEY_DOWN_TEXTURE if pressed else TRAP_KEY_UP_TEXTURE
+	keycap.position.y = -0.018 if pressed else 0.0
+	key_label.position.y = 0.022 if pressed else 0.055
+	var emphasis := 1.08 if pressed else 0.94
+	keycap.scale = Vector3.ONE * emphasis
+	key_label.scale = Vector3.ONE * emphasis
+	var alpha := 1.0 if pressed else 0.58
+	keycap.modulate = Color(1.0, 0.72 if pressed else 1.0, 0.62 if pressed else 1.0, alpha)
+	key_label.modulate = Color(0.14, 0.06 if pressed else 0.14, 0.04 if pressed else 0.12, alpha)
 
 
 func _set_actor_visual_layers(node: Node, layers: int) -> void:

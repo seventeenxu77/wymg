@@ -76,10 +76,25 @@ func _initialize() -> void:
 	var trap_prompt := thief_actor.get_node("TrapPrompt") as Label3D
 	var trap_pivot := thief_actor.get_node("SwayPivot") as Node3D
 	var thief_sprite := thief_actor.get_node("SwayPivot/PaperSprite") as Sprite3D
+	var left_key := thief_actor.get_node("TrapPrompt/LeftKey") as Sprite3D
+	var right_key := thief_actor.get_node("TrapPrompt/RightKey") as Sprite3D
+	var left_label := thief_actor.get_node("TrapPrompt/LeftLabel") as Label3D
+	var right_label := thief_actor.get_node("TrapPrompt/RightLabel") as Label3D
 	assert(trap_prompt.visible)
 	assert(trap_prompt.text == "←")
+	assert(left_label.text == "←")
+	assert(right_label.text == "→")
+	assert(left_key.texture == World25D.TRAP_KEY_DOWN_TEXTURE)
+	assert(right_key.texture == World25D.TRAP_KEY_UP_TEXTURE)
+	assert(trap_pivot.position.is_zero_approx())
 	assert(absf(trap_pivot.rotation.z) > 0.05)
+	var left_lean := trap_pivot.rotation.z
 	assert(thief_sprite.modulate.r > thief_sprite.modulate.g)
+	renderer._sync_actor(thief_actor, trapped_state, 20.40, true)
+	assert(left_key.texture == World25D.TRAP_KEY_UP_TEXTURE)
+	assert(right_key.texture == World25D.TRAP_KEY_DOWN_TEXTURE)
+	assert(trap_pivot.position.is_zero_approx())
+	assert(signf(trap_pivot.rotation.z) == -signf(left_lean))
 
 	var sweep := renderer._create_attack_cone()
 	renderer.attack_cone = sweep

@@ -15,6 +15,16 @@ func _run() -> void:
 	for _frame in range(4):
 		await process_frame
 	assert((game.main_menu_rects as Dictionary).size() == 4)
+	var hud: GameHud = game.hud
+	game._input(_key(KEY_D, KEY_D))
+	hud._process(0.016)
+	assert(int(game.main_menu_selected) == 1)
+	assert(str(hud.main_menu_slam_action) == "start")
+	assert(hud.main_menu_shake_started_at > hud.main_menu_slam_started_at)
+	assert(hud._main_menu_slam_lift(hud.MAIN_MENU_SLAM_IMPACT_SECONDS) < 0.0)
+	game._input(_key(KEY_A, KEY_A))
+	hud._process(0.016)
+	assert(int(game.main_menu_selected) == 0)
 	game._activate_main_menu_action("settings")
 	assert(str(game.main_menu_panel) == "settings")
 	await process_frame
