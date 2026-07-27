@@ -30,6 +30,27 @@ func _run() -> void:
 	assert((left["rooms"] as Array).size() == 5)
 	assert((right["rooms"] as Array).size() == 5)
 
+	# A modal on one side must never swallow the other player's key range.
+	left["panel_open"] = true
+	right["objective"] = "challenge"
+	right["monster"]["room"] = Vector2i(2, 0)
+	right["monster"]["pos"] = Vector2(1.0, 2.5)
+	right["monster"]["facing"] = Vector2.RIGHT
+	right["thief"]["room"] = Vector2i(2, 0)
+	right["thief"]["pos"] = Vector2(2.0, 2.5)
+	game.tutorial_system.handle_input(_key(KEY_KP_2, KEY_KP_2))
+	assert(int(right["ai_hits"]) == 1)
+	left["panel_open"] = false
+
+	# Finishing one side while the other is in its shop keeps that shop usable.
+	left["shop_open"] = true
+	left["shop_focus"] = 0
+	left["shop_owned"] = false
+	game.tutorial_system._finish_run("B")
+	game.tutorial_system.handle_input(_key(KEY_R, KEY_R))
+	assert(bool(left["shop_owned"]))
+	left["shop_open"] = false
+
 	left["objective"] = "challenge"
 	left["thief"]["room"] = Vector2i(2, 0)
 	left["thief"]["moving"] = false
@@ -51,7 +72,7 @@ func _run() -> void:
 	assert((left["thief"]["pos"] as Vector2).distance_to(contact_position) > 0.01)
 
 	var abandoned_renderer: Node = left["renderer"]
-	game.tutorial_system.exit_current_run("A")
+	game.tutorial_system.handle_input(_key(KEY_T, KEY_T))
 	assert(str(game.tutorial_system.sessions["A"]["mode"]) == "select")
 	assert((game.tutorial_system.sessions["A"]["rooms"] as Array).is_empty())
 	await process_frame
@@ -72,8 +93,11 @@ func _run() -> void:
 	course["thief"]["room"] = Vector2i(1, 0)
 	course["thief"]["pos"] = Vector2(1.45, 2.5)
 	course["thief"]["facing"] = Vector2.RIGHT
-	for _hit in range(4):
+	for _hit in range(6):
 		game.tutorial_system._tutorial_hit("A", course)
+	game.tutorial_system.elapsed += game.tutorial_system.HIT_WINDUP_TIME * 0.8
+	game.tutorial_system._update_action_visuals(course)
+	assert(not (course["thief"]["impact_visual_offset"] as Vector2).is_zero_approx())
 	var storage: Dictionary = course["rooms"][1]["furniture"][0]
 	assert(bool(storage["destroyed"]))
 	course["thief"]["pos"] = Vector2(2.9, 2.5)
@@ -123,7 +147,7 @@ func _run() -> void:
 	game.tutorial_system._place_tutorial_treasure(monster_course)
 	assert(str(monster_course["objective"]) == "enter_room_3")
 	var monster_storage: Dictionary = monster_course["rooms"][1]["furniture"][0]
-	assert(int(monster_storage["durability"]) == 4)
+	assert(int(monster_storage["durability"]) == 6)
 	monster_course["objective"] = "challenge"
 	monster_course["monster"]["room"] = Vector2i(2, 0)
 	monster_course["monster"]["pos"] = Vector2(1.0, 2.5)
@@ -134,6 +158,8 @@ func _run() -> void:
 	game.tutorial_system._tutorial_attack(monster_course)
 	assert(bool(monster_course["thief"]["downed"]))
 	assert(str(monster_course["objective"]) == "enter_room_4")
+	game.tutorial_system.handle_input(_key(KEY_KP_SUBTRACT, KEY_KP_SUBTRACT))
+	assert(str(game.tutorial_system.sessions["B"]["mode"]) == "select")
 
 	game.phase = "hunt"
 	game.elapsed = 20.0
@@ -159,13 +185,44 @@ func _run() -> void:
 
 	game.tutorial_system.mark_ready("A")
 	game.tutorial_system.mark_ready("B")
+	assert(bool(game.tutorial_system.active))
+	assert(bool(game.tutorial_system.finish_confirm_open))
+	assert(str(game.tutorial_system.sessions["A"]["mode"]) == "ready")
+	assert(str(game.tutorial_system.sessions["B"]["mode"]) == "ready")
+
+	# “先等等” cleans tutorial resources and returns to the main menu.
+	game.tutorial_system.handle_input(_key(KEY_D, KEY_D))
+	assert(int(game.tutorial_system.finish_confirm_selection) == 1)
+	game.tutorial_system.handle_input(_key(KEY_SPACE, KEY_SPACE))
 	await process_frame
 	await process_frame
 	assert(not bool(game.tutorial_system.active))
+	assert(bool(game.main_menu_open))
+
+	# Opening tutorial again and choosing the default “冲” starts a fresh round.
+	game._open_tutorial_mode()
+	game.tutorial_system.mark_ready("A")
+	game.tutorial_system.mark_ready("B")
+	assert(bool(game.tutorial_system.finish_confirm_open))
+	await process_frame
+	assert((game.tutorial_system.finish_confirm_rects as Array).size() == 2)
+	var rush_click := InputEventMouseButton.new()
+	rush_click.pressed = true
+	rush_click.button_index = MOUSE_BUTTON_LEFT
+	rush_click.position = (game.tutorial_system.finish_confirm_rects[0] as Rect2).get_center()
+	game._input(rush_click)
+	assert(bool(game.tutorial_transition_active))
+	await process_frame
+	await process_frame
+	await process_frame
+	await process_frame
+	assert(not bool(game.tutorial_system.active))
+	assert(not bool(game.tutorial_transition_active))
+	assert(not bool(game.main_menu_open))
 	assert(game.current_round == 1)
 	assert(game.phase == "hide")
 
-	print("Tutorial system test passed: dual isolation, cleanup, ready gate, and stationary stealth.")
+	print("Tutorial system test passed: dual isolation, cleanup, final confirmation, and stationary stealth.")
 	game.queue_free()
 	await process_frame
 	await process_frame

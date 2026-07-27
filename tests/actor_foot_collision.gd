@@ -95,6 +95,16 @@ func _initialize() -> void:
 		"moving": true,
 	}, PI / 28.0, false)
 	assert(is_equal_approx(pivot.position.y, 0.22))
+	renderer._sync_actor(monster_actor, {
+		"room": Vector2i.ZERO,
+		"pos": Vector2(2.5, 2.5),
+		"dir": "right",
+		"moving": false,
+		"hit_reaction_started_at": 1.0,
+		"hit_reaction_direction": Vector2.RIGHT,
+	}, 1.0 + World25D.HIT_REACTION_SECONDS * 0.5, true)
+	assert(absf(pivot.rotation.z) > 0.35)
+	assert(pivot.position.x > 0.15)
 
 	print("Actor foot anchor and continuous ground collision regression test passed.")
 	game.free()

@@ -539,10 +539,48 @@ func _use_pill() -> void:
 	_push_log("盗贼回复了 1 滴血。")
 
 
+func _trigger_thief_hit_feedback(hit_direction: Vector2) -> void:
+	thief["hit_reaction_started_at"] = elapsed
+	thief["hit_reaction_direction"] = (
+		hit_direction.normalized()
+		if not hit_direction.is_zero_approx()
+		else Vector2.RIGHT
+	)
+
+
+func _voice(role: String) -> void:
+	if phase != "hunt":
+		return
+	var actor := _get_actor(role)
+	if elapsed - float(actor.get("last_voice_at", -10.0)) < VOICE_COOLDOWN_SECONDS:
+		return
+	actor["last_voice_at"] = elapsed
+	var is_thief := role == "thief"
+	var sound_name := "scream" if is_thief else "laugh"
+	var noise_label := "盗贼尖叫" if is_thief else "怪物笑声"
+	_play_sound(sound_name, -5.0, VOICE_COOLDOWN_SECONDS)
+	_add_noise(
+		role,
+		noise_label,
+		{},
+		VOICE_COOLDOWN_SECONDS,
+		VOICE_NOISE_SECONDS,
+		false,
+		true,
+	)
+	if is_thief:
+		_reveal_thief(actor)
+	_push_log("%s主动%s，声音暴露了当前位置。" % [
+		_role_name(role),
+		"尖叫" if is_thief else "大笑",
+	])
+
+
 func _attack() -> void:
 	if phase != "hunt" or elapsed < attack_until or not _role_can_act("monster"):
 		return
-	attack_until = elapsed + 0.7
+	attack_until = elapsed + MONSTER_ATTACK_COOLDOWN
+	monster["attack_started_at"] = elapsed
 	_play_sound("attack", -7.0, 0.18)
 	_add_noise("monster", "挥砍")
 	var same_room: bool = monster["room"] == thief["room"]
@@ -552,13 +590,20 @@ func _attack() -> void:
 	var dot := 1.0 if distance == 0.0 else vector.normalized().dot(facing)
 	if same_room and distance <= 2.35 and dot >= cos(PI / 4.0):
 		thief["hp"] -= 1
+		_trigger_thief_hit_feedback(facing)
+		status_effects["thief"]["stunned_until"] = maxf(
+			float(status_effects["thief"].get("stunned_until", 0.0)),
+			elapsed + MONSTER_ATTACK_HIT_STUN_SECONDS,
+		)
+		furniture_hit_actions["thief"] = {}
+		thief["impact_visual_offset"] = Vector2.ZERO
 		_cancel_teleporter("thief", "受到怪物攻击")
 		_reveal_thief()
 		if thief["hp"] <= 0:
 			_play_sound("scream", -4.0, 0.2)
 			_end_round("怪物砍倒了盗贼，守住了老宅。", false, true)
 		else:
-			_push_log("挥砍命中！盗贼失去 1 滴血。")
+			_push_log("横扫命中！盗贼失去 1 滴血并硬直 %.1f 秒。" % MONSTER_ATTACK_HIT_STUN_SECONDS)
 	else:
 		if _destroy_device_in_front("monster", ["decoy", "phonograph"]):
 			_push_log("怪物击碎了前方的装置。")

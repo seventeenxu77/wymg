@@ -87,6 +87,22 @@ func _run() -> void:
 	for furniture_kind in ["床", "衣柜", "书柜", "木桶", "木箱", "花瓶"]:
 		var visual_info: Dictionary = renderer._furniture_info(furniture_kind)
 		assert(ResourceLoader.exists(visual_info["path"]))
+	assert(str(renderer._furniture_info("床")["path"]).ends_with("ff_bed_clean.png"))
+	var item_visual_cases := [
+		[{"kind": "treasure", "id": "treasure-2"}, "silver_candlestick.png"],
+		[{"kind": "treasure", "id": "treasure-3"}, "emerald_brooch.png"],
+		[{"kind": "treasure", "id": "treasure-5"}, "monster_heart.png"],
+		[{"kind": "trinket", "label": "旧怀表"}, "old_pocket_watch.png"],
+		[{"kind": "trinket", "label": "银汤匙"}, "silver_spoon.png"],
+		[{"kind": "trinket", "label": "铜制烟盒"}, "copper_cigarette_case.png"],
+		[{"kind": "trinket", "label": "珍珠纽扣"}, "pearl_button.png"],
+		[{"kind": "tool", "tool_type": "teleporter"}, "teleporter.png"],
+		[{"kind": "device", "device_type": "robot"}, "robot.png"],
+	]
+	for visual_case in item_visual_cases:
+		var visual_info: Dictionary = renderer._item_visual_info(visual_case[0])
+		assert(str(visual_info["path"]).ends_with(str(visual_case[1])))
+		assert(ResourceLoader.exists(str(visual_info["path"])))
 	assert(game._furniture_durability("花瓶") == 1)
 	assert(game._furniture_durability("木桶") == 2)
 	assert(game._furniture_durability("木箱") == 3)
@@ -143,6 +159,25 @@ func _run() -> void:
 	assert(thief_before.is_equal_approx(thief_after_left_rotation))
 	assert(is_equal_approx(game._minimap_rotation("monster"), deg_to_rad(45.0)))
 	assert(is_equal_approx(game._minimap_rotation("thief"), 0.0))
+	var rotated_east_noise: Vector2 = game.hud._noise_screen_direction(
+		"monster",
+		Vector2.ZERO,
+		Vector2.RIGHT * 30.0,
+	)
+	assert(rotated_east_noise.x > 0.0)
+	assert(rotated_east_noise.y > 0.0)
+	await process_frame
+	var actor_screen := renderer.monster_camera.unproject_position(
+		renderer.world_position(game.monster["room"], game.monster["pos"], 0.55)
+	)
+	var east_screen := renderer.monster_camera.unproject_position(
+		renderer.world_position(
+			game.monster["room"],
+			(game.monster["pos"] as Vector2) + Vector2(0.4, 0.0),
+			0.55,
+		)
+	)
+	assert(rotated_east_noise.dot((east_screen - actor_screen).normalized()) > 0.99)
 
 	renderer.rotate_camera("thief", -1)
 	renderer.sync(game.rooms, game.monster, game.thief, game.afterimages, game.dragging, false, game.elapsed)
@@ -160,6 +195,12 @@ func _run() -> void:
 	assert(monster_up.is_equal_approx(Vector2(-1, -1).normalized()))
 	assert(thief_up.is_equal_approx(Vector2(1, -1).normalized()))
 	renderer.rotate_camera("monster", -1)
+	renderer.sync(game.rooms, game.monster, game.thief, game.afterimages, game.dragging, false, game.elapsed)
+	assert(game.hud._noise_screen_direction(
+		"monster",
+		Vector2.ZERO,
+		Vector2.RIGHT * 30.0,
+	).is_equal_approx(Vector2.RIGHT))
 	var monster_reset_up: Vector2 = renderer.camera_relative_vector("monster", Vector2.UP)
 	var thief_unchanged_up: Vector2 = renderer.camera_relative_vector("thief", Vector2.UP)
 	assert(monster_reset_up.is_equal_approx(Vector2.UP))
@@ -247,7 +288,7 @@ func _run() -> void:
 				if generated_content["kind"] == "trinket":
 					assert(int(generated_content["value"]) == 1)
 				elif generated_content["kind"] == "treasure":
-					assert(int(generated_content["value"]) == 1)
+					assert(int(generated_content["value"]) == 2)
 					assert(str(generated_content["id"]).begins_with("wild-treasure-"))
 				else:
 					assert(str(generated_content["tool_type"]) == "adrenaline")
@@ -297,15 +338,21 @@ func _run() -> void:
 	game._apply_view_relative_input("monster", Vector2.RIGHT, 0.1)
 	assert((game.monster["pos"] as Vector2).is_equal_approx(panel_locked_position))
 	game.selected_treasure = 0
-	_press_key(game, KEY_S, KEY_S)
+	_press_key(game, KEY_D, KEY_D)
 	assert(game.selected_treasure == 1)
-	_press_key(game, KEY_W, KEY_W)
+	_press_key(game, KEY_A, KEY_A)
 	assert(game.selected_treasure == 0)
 	_press_key(game, KEY_R, KEY_R)
 	assert(test_storage["contents"].size() == 1)
 	assert(test_storage["contents"][0]["id"] == "treasure-2")
-	assert(int(test_storage["durability"]) == 5)
-	assert(renderer._furniture_content_value(test_storage) == 2)
+	assert(int(test_storage["durability"]) == 7)
+	assert(renderer._furniture_content_value(test_storage) == 4)
+	assert(renderer._detector_shake_degrees(10) > renderer._detector_shake_degrees(4))
+	assert(renderer._detector_shake_distance(10) > renderer._detector_shake_distance(4))
+	var treasure_markers: Array = game.hud._monster_treasure_markers(storage_room)
+	assert(treasure_markers.size() == 1)
+	assert(str(treasure_markers[0]["id"]) == "treasure-2")
+	assert((treasure_markers[0]["pos"] as Vector2).is_equal_approx(test_storage["pos"]))
 	test_storage["last_hit_time"] = -10.0
 	renderer.sync(game.rooms, game.monster, game.thief, game.afterimages, game.dragging, false, game.elapsed)
 	var storage_rotation_before: float = (renderer.furniture_nodes["test-storage"] as Node3D).rotation.y
@@ -324,7 +371,7 @@ func _run() -> void:
 	_press_key(game, KEY_R, KEY_R)
 	assert(test_storage["contents"].size() == 1)
 	assert(test_storage["contents"][0]["id"] == "treasure-2")
-	_press_key(game, KEY_S, KEY_S)
+	_press_key(game, KEY_D, KEY_D)
 	assert(game.selected_treasure == 1)
 	_press_key(game, KEY_R, KEY_R)
 	assert(test_storage["contents"].size() == 1)
@@ -340,19 +387,19 @@ func _run() -> void:
 		"value": 1,
 	})
 	game._refresh_furniture_durability(test_storage)
-	assert(int(test_storage["durability"]) == 6)
-	assert(renderer._furniture_content_value(test_storage) == 2)
+	assert(int(test_storage["durability"]) == 8)
+	assert(renderer._furniture_content_value(test_storage) == 5)
 
 	game.phase = "hunt"
 	game.thief["room"] = game.monster["room"]
 	game.thief["pos"] = Vector2(2.5, 2.5)
 	game.thief["dir"] = "right"
 	game.thief["facing"] = Vector2.RIGHT
-	for hit_index in range(5):
+	for hit_index in range(7):
 		game._hit_furniture("thief")
 		game._update_furniture_hit_actions(game.HIT_WINDUP_TIME + game.HIT_LUNGE_TIME + game.HIT_RECOVER_TIME)
 	assert(not bool(test_storage["destroyed"]))
-	assert(int(test_storage["damage"]) == 5)
+	assert(int(test_storage["damage"]) == 7)
 	game._hit_furniture("thief")
 	game._update_furniture_hit_actions(game.HIT_WINDUP_TIME + game.HIT_LUNGE_TIME + game.HIT_RECOVER_TIME)
 	assert(bool(test_storage["destroyed"]))
@@ -361,18 +408,18 @@ func _run() -> void:
 	for released_item in storage_room["items"]:
 		game.thief["pos"] = released_item["pos"]
 		game._thief_search()
-	assert(game.loot_value == 3)
+	assert(game.loot_value == 5)
 	assert(game.extracted_value == 0)
 
 	game.thief["room"] = game.ENTRANCE_ROOM
 	game.thief["pos"] = game.ENTRANCE_POS
 	game._thief_exit()
 	assert(game.has_extracted)
-	assert(game.extracted_value == 3)
+	assert(game.extracted_value == 5)
 	assert(game.phase == "ended")
 	game.loot_value = 99
 	game._thief_exit()
-	assert(game.extracted_value == 3)
+	assert(game.extracted_value == 5)
 
 	print("2.5D smoke test passed: movement, room visibility, storage damage, loot carrying, and one-time extraction.")
 	game.free()

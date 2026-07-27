@@ -2,6 +2,7 @@ class_name TutorialSystem
 extends Node
 
 signal all_players_ready
+signal return_to_main_menu_requested
 
 const WORLD_25D_SCRIPT := preload("res://scripts/world_25d.gd")
 
@@ -10,8 +11,15 @@ const ACTOR_SPEED := 4.0
 const HIDE_DELAY := 0.0
 const ATTACK_REACH := 2.35
 const ATTACK_DOT := 0.707
+const MONSTER_ATTACK_COOLDOWN := 10.0
+const MONSTER_ATTACK_ANIMATION_SECONDS := 0.55
 const ADRENALINE_SECONDS := 6.0
 const FATIGUE_SECONDS := 3.0
+const HIT_WINDUP_TIME := 0.14
+const HIT_LUNGE_TIME := 0.12
+const HIT_RECOVER_TIME := 0.18
+const HIT_WINDUP_DISTANCE := 0.18
+const HIT_LUNGE_DISTANCE := 0.32
 
 const OBJECTIVE_ORDER := [
 	"help",
@@ -38,6 +46,9 @@ var completed := {
 }
 var selection_rects := {"A": [], "B": []}
 var exit_rects := {"A": Rect2(), "B": Rect2()}
+var finish_confirm_open := false
+var finish_confirm_selection := 0
+var finish_confirm_rects: Array = []
 var rng := RandomNumberGenerator.new()
 
 
@@ -56,6 +67,9 @@ func open() -> void:
 		return
 	active = true
 	elapsed = 0.0
+	finish_confirm_open = false
+	finish_confirm_selection = 0
+	finish_confirm_rects.clear()
 	for player in ["A", "B"]:
 		_clear_run(player)
 		sessions[player] = _fresh_lobby_session()
@@ -71,6 +85,9 @@ func close() -> void:
 	set_physics_process(false)
 	selection_rects = {"A": [], "B": []}
 	exit_rects = {"A": Rect2(), "B": Rect2()}
+	finish_confirm_open = false
+	finish_confirm_selection = 0
+	finish_confirm_rects.clear()
 
 
 func _fresh_lobby_session() -> Dictionary:
@@ -123,7 +140,7 @@ func start_run(player: String, role: String) -> void:
 		"id": "tutorial-carried-%s" % player,
 		"kind": "treasure",
 		"label": "银制烛台",
-		"value": 2,
+		"value": 4,
 	}
 	sessions[player] = {
 		"mode": "running",
@@ -165,7 +182,12 @@ func start_run(player: String, role: String) -> void:
 		"adrenaline_until": 0.0,
 		"fatigue_until": 0.0,
 		"impact_until": 0.0,
+		"impact_started_at": -10.0,
+		"impact_facing": Vector2.RIGHT,
 		"attack_until": 0.0,
+		"pickup_until": 0.0,
+		"tool_effect_until": 0.0,
+		"projection_ready": false,
 	}
 	renderer.rebuild(rooms)
 	renderer.sync(rooms, monster, thief, [], {"monster": "", "thief": ""}, false, elapsed)
@@ -214,12 +236,15 @@ func mark_ready(player: String) -> void:
 	session["message"] = "已退出教学，等待另一位玩家。"
 	sessions[player] = session
 	if str(sessions["A"]["mode"]) == "ready" and str(sessions["B"]["mode"]) == "ready":
-		all_players_ready.emit()
+		finish_confirm_open = true
+		finish_confirm_selection = 0
 
 
 func cancel_ready(player: String) -> void:
 	if player not in ["A", "B"] or str(sessions[player].get("mode", "")) != "ready":
 		return
+	finish_confirm_open = false
+	finish_confirm_rects.clear()
 	sessions[player] = _fresh_lobby_session()
 
 
@@ -242,6 +267,12 @@ func _clear_run(player: String) -> void:
 func handle_input(event: InputEvent) -> bool:
 	if not active:
 		return false
+	if finish_confirm_open:
+		if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT and event.pressed:
+			return _handle_finish_confirm_click(event.position)
+		if event is InputEventKey and event.pressed and not event.echo:
+			return _handle_finish_confirm_key(event)
+		return true
 	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT and event.pressed:
 		return _handle_mouse_click(event.position)
 	if not (event is InputEventKey) or not event.pressed or event.echo:
@@ -254,10 +285,53 @@ func handle_input(event: InputEvent) -> bool:
 				session["help_open"] = false
 				closed_help = true
 		return closed_help
-	for player in ["A", "B"]:
-		if _handle_player_key(player, event):
+	var owner := _event_owner(event)
+	if owner == "":
+		return false
+	return _handle_player_key(owner, event)
+
+
+func _handle_finish_confirm_click(position: Vector2) -> bool:
+	for index in range(finish_confirm_rects.size()):
+		if (finish_confirm_rects[index] as Rect2).has_point(position):
+			finish_confirm_selection = index
+			_activate_finish_confirm()
 			return true
-	return false
+	return true
+
+
+func _handle_finish_confirm_key(event: InputEventKey) -> bool:
+	var physical := event.physical_keycode
+	var logical := event.keycode
+	if (
+		physical in [KEY_A, KEY_D, KEY_W, KEY_S]
+		or logical in [KEY_LEFT, KEY_RIGHT, KEY_UP, KEY_DOWN]
+	):
+		finish_confirm_selection = 1 - finish_confirm_selection
+		return true
+	if (
+		physical == KEY_R
+		or physical == KEY_SPACE
+		or logical in [KEY_KP_1, KEY_ENTER, KEY_KP_ENTER, KEY_SPACE]
+	):
+		_activate_finish_confirm()
+		return true
+	if logical == KEY_ESCAPE:
+		finish_confirm_selection = 1
+		_activate_finish_confirm()
+		return true
+	return true
+
+
+func _activate_finish_confirm() -> void:
+	if not finish_confirm_open:
+		return
+	finish_confirm_open = false
+	finish_confirm_rects.clear()
+	if finish_confirm_selection == 0:
+		all_players_ready.emit()
+	else:
+		return_to_main_menu_requested.emit()
 
 
 func _handle_mouse_click(position: Vector2) -> bool:
@@ -287,6 +361,14 @@ func _handle_mouse_click(position: Vector2) -> bool:
 func _handle_player_key(player: String, event: InputEventKey) -> bool:
 	var session: Dictionary = sessions[player]
 	var mode := str(session.get("mode", "select"))
+	if _is_exit_key(player, event):
+		if mode == "running":
+			exit_current_run(player)
+		elif mode == "ready":
+			cancel_ready(player)
+		else:
+			mark_ready(player)
+		return true
 	if mode == "select":
 		var previous := _is_previous_key(player, event)
 		var next := _is_next_key(player, event)
@@ -334,7 +416,8 @@ func _handle_player_key(player: String, event: InputEventKey) -> bool:
 		_update_basics_objective(session)
 		return true
 	if _is_hit_key(player, event):
-		_tutorial_hit(player, session)
+		if elapsed >= float(session.get("impact_until", 0.0)):
+			_tutorial_hit(player, session)
 		return true
 	if _is_pickup_key(player, event):
 		_tutorial_pickup(session)
@@ -414,7 +497,9 @@ func _update_run(player: String, session: Dictionary, delta: float) -> void:
 	_update_player_stealth(session, delta)
 	_update_tutorial_ai(session, delta)
 	_update_timed_effects(session)
+	_update_action_visuals(session)
 	_sync_session(session)
+	session["projection_ready"] = true
 
 
 func _continuous_input(player: String) -> Vector2:
@@ -541,7 +626,9 @@ func _update_player_stealth(session: Dictionary, delta: float) -> void:
 
 func _tutorial_hit(player: String, session: Dictionary) -> void:
 	var actor := _player_actor(session)
-	session["impact_until"] = elapsed + 0.35
+	session["impact_started_at"] = elapsed
+	session["impact_until"] = elapsed + HIT_WINDUP_TIME + HIT_LUNGE_TIME + HIT_RECOVER_TIME
+	session["impact_facing"] = (actor.get("facing", Vector2.RIGHT) as Vector2).normalized()
 	actor["hidden_from_monster"] = false
 	session["stationary_time"] = 0.0
 	var objective := str(session["objective"])
@@ -550,6 +637,7 @@ func _tutorial_hit(player: String, session: Dictionary) -> void:
 	if furniture.is_empty():
 		return
 	furniture["last_hit_time"] = elapsed
+	_play_tutorial_sound(session, "furniture_hit", -9.0)
 	if objective == "furniture":
 		if str(session["role"]) == "monster":
 			furniture["opened"] = true
@@ -579,9 +667,12 @@ func _place_tutorial_treasure(session: Dictionary) -> void:
 	var carried: Array = session["carried_treasures"]
 	if carried.is_empty():
 		return
-	furniture["contents"].append((carried[0] as Dictionary).duplicate(true))
+	var treasure: Dictionary = carried[0]
+	furniture["contents"].append(treasure.duplicate(true))
 	carried.clear()
-	furniture["durability"] = int(furniture["base_durability"]) + 2
+	furniture["durability"] = int(furniture["base_durability"]) + int(treasure["value"])
+	furniture["last_hit_time"] = elapsed
+	session["pickup_until"] = elapsed + 0.42
 	session["panel_open"] = false
 	session["objective"] = "enter_room_3"
 
@@ -598,6 +689,7 @@ func _tutorial_pickup(session: Dictionary) -> void:
 			continue
 		item["collected"] = true
 		(session["loot"] as Array).append(item.duplicate(true))
+		session["pickup_until"] = elapsed + 0.42
 		session["objective"] = "enter_room_3"
 		actor["hidden_from_monster"] = false
 		session["stationary_time"] = 0.0
@@ -607,8 +699,9 @@ func _tutorial_pickup(session: Dictionary) -> void:
 func _tutorial_attack(session: Dictionary) -> void:
 	if str(session["objective"]) != "challenge" or elapsed < float(session["attack_until"]):
 		return
-	session["attack_until"] = elapsed + 0.7
 	var actor := _player_actor(session)
+	session["attack_until"] = elapsed + MONSTER_ATTACK_COOLDOWN
+	actor["attack_started_at"] = elapsed
 	var ai := _ai_actor(session)
 	if bool(ai.get("downed", false)) or actor["room"] != ai["room"]:
 		return
@@ -629,6 +722,7 @@ func _use_tutorial_tool(session: Dictionary) -> void:
 	if str(session["objective"]) != "use_tool" or (session["inventory"] as Array).is_empty():
 		return
 	(session["inventory"] as Array).clear()
+	session["tool_effect_until"] = elapsed + 0.7
 	session["adrenaline_until"] = elapsed + ADRENALINE_SECONDS
 	session["fatigue_until"] = elapsed + ADRENALINE_SECONDS + FATIGUE_SECONDS
 	session["objective"] = "enter_room_5"
@@ -750,6 +844,26 @@ func _update_timed_effects(session: Dictionary) -> void:
 		session["fatigue_until"] = 0.0
 
 
+func _update_action_visuals(session: Dictionary) -> void:
+	var actor := _player_actor(session)
+	var action_time := elapsed - float(session.get("impact_started_at", -10.0))
+	var impact_time := HIT_WINDUP_TIME + HIT_LUNGE_TIME
+	var total_time := impact_time + HIT_RECOVER_TIME
+	if action_time < 0.0 or action_time >= total_time:
+		actor["impact_visual_offset"] = Vector2.ZERO
+		return
+	var facing: Vector2 = session.get("impact_facing", Vector2.RIGHT)
+	if action_time < HIT_WINDUP_TIME:
+		var windup_t := smoothstep(0.0, 1.0, action_time / HIT_WINDUP_TIME)
+		actor["impact_visual_offset"] = -facing * HIT_WINDUP_DISTANCE * windup_t
+	elif action_time < impact_time:
+		var lunge_t := smoothstep(0.0, 1.0, (action_time - HIT_WINDUP_TIME) / HIT_LUNGE_TIME)
+		actor["impact_visual_offset"] = facing * lerpf(-HIT_WINDUP_DISTANCE, HIT_LUNGE_DISTANCE, lunge_t)
+	else:
+		var recover_t := clampf((action_time - impact_time) / HIT_RECOVER_TIME, 0.0, 1.0)
+		actor["impact_visual_offset"] = facing * HIT_LUNGE_DISTANCE * (1.0 - smoothstep(0.0, 1.0, recover_t))
+
+
 func _sync_session(session: Dictionary) -> void:
 	var renderer: World25D = session["renderer"]
 	if not renderer or not is_instance_valid(renderer):
@@ -768,7 +882,8 @@ func _sync_session(session: Dictionary) -> void:
 		session["thief"],
 		[],
 		selected,
-		elapsed < float(session["attack_until"]),
+		elapsed - float((session["monster"] as Dictionary).get("attack_started_at", -10.0))
+			< MONSTER_ATTACK_ANIMATION_SECONDS,
 		elapsed,
 	)
 
@@ -851,7 +966,7 @@ func _make_rooms(role: String) -> Array:
 			"id": "tutorial-floor-treasure",
 			"kind": "treasure",
 			"label": "银制烛台",
-			"value": 2,
+			"value": 4,
 		})
 	(rooms[1]["furniture"] as Array).append(_make_furniture(
 		"tutorial-storage-%s" % role,
@@ -999,10 +1114,13 @@ func objective_detail(player: String, session: Dictionary) -> String:
 		"help":
 			return "按 %s 打开帮助菜单；查看后再关闭。" % ("F1" if player == "A" else "Num+")
 		"basics":
-			return "移动 %.0f%%　逆时针 %s　顺时针 %s" % [
+			return "%s移动 %.0f%%；按%s逆时针%s；按%s顺时针%s。" % [
+				"WASD " if player == "A" else "方向键 ",
 				clampf(float(session["moved_distance"]) / 1.2 * 100.0, 0.0, 100.0),
-				"✓" if bool(session["rotated_ccw"]) else "未完成",
-				"✓" if bool(session["rotated_cw"]) else "未完成",
+				"Q" if player == "A" else "Num7",
+				"（完成）" if bool(session["rotated_ccw"]) else "",
+				"E" if player == "A" else "Num9",
+				"（完成）" if bool(session["rotated_cw"]) else "",
 			]
 		"enter_room_2":
 			return "沿右侧门进入下一个房间。"
@@ -1010,16 +1128,27 @@ func objective_detail(player: String, session: Dictionary) -> String:
 			if role == "thief":
 				var room := _tutorial_room_at(session, Vector2i(1, 0))
 				var furniture: Dictionary = room["furniture"][0]
+				var hit_key := "G" if player == "A" else "Num0"
+				var pickup_key := "R" if player == "A" else "Num1"
 				return (
-					"撞碎木桶后，用%s拾取藏品。耐久 %d = 家具2 + 藏品附加2。"
-					% ["R" if player == "A" else "Num1", int(furniture["durability"])]
+					"先按%s撞击木桶至损毁（%d/%d），再靠近掉落藏品按%s拾取。耐久 = 家具2 + 藏品附加4。"
+					% [hit_key, int(furniture["damage"]), int(furniture["durability"]), pickup_key]
 				)
-			return "撞击一次打开家具，再用%s把随身藏品放进去。放入后耐久 = 家具2 + 藏品附加2。" % ("R" if player == "A" else "Num1")
+			return "先按%s撞击一次打开家具，再按%s把随身藏品放入。放入后耐久 = 家具2 + 藏品附加4。" % [
+				"G" if player == "A" else "Num0",
+				"R" if player == "A" else "Num1",
+			]
 		"enter_room_3":
 			return "家具教学完成，从右侧门进入第三个房间。"
 		"challenge":
 			if role == "thief":
 				return "停止移动会立刻隐匿；即使被怪物碰到也仍可移动。避开巡逻，到达房间右侧。"
+			var cooldown_left := maxf(float(session["attack_until"]) - elapsed, 0.0)
+			if cooldown_left > 0.0:
+				return "横扫冷却 %.1f 秒；跟随噪音锁定AI盗贼。命中：%d / 2。" % [
+					cooldown_left,
+					int(session["ai_hits"]),
+				]
 			return "跟随噪音寻找AI盗贼，用%s命中两次：%d / 2。" % [
 				"空格" if player == "A" else "Num2",
 				int(session["ai_hits"]),
@@ -1027,15 +1156,116 @@ func objective_detail(player: String, session: Dictionary) -> String:
 		"enter_room_4":
 			return "对抗练习完成，从右侧门进入第四个房间。"
 		"shop_hit":
-			return "撞击房间中央发光的教学商店。"
+			return "靠近中央发光的教学商店，按%s撞击打开。" % ("G" if player == "A" else "Num0")
 		"shop":
-			return "购买肾上腺素 → 从仓库装备 → 点击准备。"
+			return "%s切换栏位，%s购买/装备，最后按%s准备。" % [
+				"A/D" if player == "A" else "←/→",
+				"R" if player == "A" else "Num1",
+				"H" if player == "A" else "Num5",
+			]
 		"use_tool":
 			return "按%s使用已装备的肾上腺素。" % ("F" if player == "A" else "Num3")
 		"enter_room_5":
 			return "利用加速从右侧门进入第五个房间；随后会有3秒疲劳。"
 		"exit_hit":
-			return "撞击中央的教学出口，完成本角色教学。"
+			return "靠近中央出口，按%s撞击并完成本角色教学。" % ("G" if player == "A" else "Num0")
+	return ""
+
+
+func prompt_key(player: String, session: Dictionary) -> String:
+	if str(session.get("mode", "")) != "running":
+		return ""
+	if bool(session.get("help_open", false)):
+		return "F1" if player == "A" else "Num+"
+	if bool(session.get("panel_open", false)):
+		return "R" if player == "A" else "Num1"
+	if bool(session.get("shop_open", false)):
+		if bool(session.get("shop_equipped", false)):
+			return "H" if player == "A" else "Num5"
+		return "R" if player == "A" else "Num1"
+	var objective := str(session.get("objective", ""))
+	match objective:
+		"help": return "F1" if player == "A" else "Num+"
+		"basics":
+			if float(session.get("moved_distance", 0.0)) < 1.2:
+				return "WASD" if player == "A" else "方向键"
+			if not bool(session.get("rotated_ccw", false)):
+				return "Q" if player == "A" else "Num7"
+			return "E" if player == "A" else "Num9"
+		"enter_room_2", "enter_room_3", "enter_room_4", "enter_room_5":
+			return "D" if player == "A" else "→"
+		"furniture":
+			if str(session.get("role", "")) == "thief":
+				var furniture: Dictionary = _tutorial_room_at(session, Vector2i(1, 0))["furniture"][0]
+				if bool(furniture.get("destroyed", false)):
+					return "R" if player == "A" else "Num1"
+			return "G" if player == "A" else "Num0"
+		"challenge":
+			if str(session.get("role", "")) == "monster":
+				return "Space" if player == "A" else "Num2"
+			return "D" if player == "A" else "→"
+		"shop_hit", "exit_hit":
+			return "G" if player == "A" else "Num0"
+		"use_tool":
+			return "F" if player == "A" else "Num3"
+	return ""
+
+
+func is_prompt_key_pressed(player: String, key_label: String) -> bool:
+	if key_label == "":
+		return false
+	if player == "A":
+		match key_label:
+			"WASD": return (
+				Input.is_physical_key_pressed(KEY_W)
+				or Input.is_physical_key_pressed(KEY_A)
+				or Input.is_physical_key_pressed(KEY_S)
+				or Input.is_physical_key_pressed(KEY_D)
+			)
+			"Q": return Input.is_physical_key_pressed(KEY_Q)
+			"E": return Input.is_physical_key_pressed(KEY_E)
+			"D": return Input.is_physical_key_pressed(KEY_D)
+			"G": return Input.is_physical_key_pressed(KEY_G)
+			"R": return Input.is_physical_key_pressed(KEY_R)
+			"Space": return Input.is_physical_key_pressed(KEY_SPACE)
+			"F": return Input.is_physical_key_pressed(KEY_F)
+			"H": return Input.is_physical_key_pressed(KEY_H)
+			"F1": return Input.is_key_pressed(KEY_F1)
+	else:
+		match key_label:
+			"方向键": return (
+				Input.is_key_pressed(KEY_UP)
+				or Input.is_key_pressed(KEY_LEFT)
+				or Input.is_key_pressed(KEY_DOWN)
+				or Input.is_key_pressed(KEY_RIGHT)
+			)
+			"→": return Input.is_key_pressed(KEY_RIGHT)
+			"Num+": return Input.is_key_pressed(KEY_KP_ADD)
+			"Num7": return Input.is_key_pressed(KEY_KP_7)
+			"Num9": return Input.is_key_pressed(KEY_KP_9)
+			"Num0": return Input.is_key_pressed(KEY_KP_0)
+			"Num1": return Input.is_key_pressed(KEY_KP_1)
+			"Num2": return Input.is_key_pressed(KEY_KP_2)
+			"Num3": return Input.is_key_pressed(KEY_KP_3)
+			"Num5": return Input.is_key_pressed(KEY_KP_5)
+	return false
+
+
+func _event_owner(event: InputEventKey) -> String:
+	var physical := event.physical_keycode
+	var logical := event.keycode
+	if logical == KEY_F1 or physical in [
+		KEY_W, KEY_A, KEY_S, KEY_D, KEY_Q, KEY_E, KEY_G, KEY_R,
+		KEY_SPACE, KEY_Z, KEY_X, KEY_F, KEY_C, KEY_V, KEY_H, KEY_T,
+	]:
+		return "A"
+	if logical in [
+		KEY_UP, KEY_DOWN, KEY_LEFT, KEY_RIGHT,
+		KEY_KP_0, KEY_KP_1, KEY_KP_2, KEY_KP_3, KEY_KP_4,
+		KEY_KP_5, KEY_KP_6, KEY_KP_7, KEY_KP_8, KEY_KP_9,
+		KEY_KP_ADD, KEY_KP_SUBTRACT,
+	]:
+		return "B"
 	return ""
 
 
@@ -1083,9 +1313,13 @@ func _is_use_tool_key(player: String, event: InputEventKey) -> bool:
 	return event.physical_keycode == KEY_F if player == "A" else event.keycode == KEY_KP_3
 
 
+func _is_exit_key(player: String, event: InputEventKey) -> bool:
+	return event.physical_keycode == KEY_T if player == "A" else event.keycode == KEY_KP_SUBTRACT
+
+
 func _is_focus_left_key(player: String, event: InputEventKey) -> bool:
-	return event.physical_keycode == KEY_A if player == "A" else event.keycode == KEY_KP_4
+	return event.physical_keycode == KEY_A if player == "A" else event.keycode == KEY_LEFT
 
 
 func _is_focus_right_key(player: String, event: InputEventKey) -> bool:
-	return event.physical_keycode == KEY_D if player == "A" else event.keycode == KEY_KP_6
+	return event.physical_keycode == KEY_D if player == "A" else event.keycode == KEY_RIGHT

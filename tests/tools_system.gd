@@ -11,7 +11,10 @@ func _initialize() -> void:
 
 	assert(game.TOOL_INVENTORY_CAPACITY == 3)
 	assert(game.TRAP_ESCAPE_PRESSES == 20)
-	assert(game.TREASURES.map(func(treasure): return int(treasure["value"])) == [2, 3, 5])
+	assert(game.TREASURES.map(func(treasure): return int(treasure["value"])) == [4, 6, 10])
+	assert(int(game.WILD_TREASURE["value"]) == 2)
+	assert(str(game.WILD_TREASURE["label"]) == "古钱币")
+	assert(game.TREASURES.all(func(treasure): return not str(treasure.get("description", "")).is_empty()))
 	assert(int(game.TOOL_DEFS["robot"]["price"]) == 5)
 	assert(game.SHOP_TOOL_TYPES.has("robot"))
 	assert(is_equal_approx(game.ROBOT_SPEED, game.ACTOR_SPEED * 0.5))
@@ -69,6 +72,7 @@ func _initialize() -> void:
 	test_room["furniture"].append(storage)
 
 	var detector: Dictionary = game._make_tool_instance("detector", "detector-test")
+	assert(is_equal_approx(float(detector["charge"]), 54.0))
 	detector["active"] = true
 	detector["next_noise"] = 0.0
 	game.tool_inventories["monster"].append(detector)
@@ -77,6 +81,42 @@ func _initialize() -> void:
 	assert(is_equal_approx(float(detector["charge"]), game.DETECTOR_BATTERY_SECONDS - 1.0))
 	assert(not game.noises.is_empty())
 	assert(bool(game.noises.back()["global"]))
+	assert(str(game.noises.back().get("follow_role", "")) == "monster")
+	var detector_noise: Dictionary = game.noises.back()
+	var detector_origin: Dictionary = game._noise_location(detector_noise)
+	game.monster["pos"] = (game.monster["pos"] as Vector2) + Vector2(0.25, 0.0)
+	var moved_detector_origin: Dictionary = game._noise_location(detector_noise)
+	assert((moved_detector_origin["pos"] as Vector2).is_equal_approx(game.monster["pos"]))
+	assert(not (moved_detector_origin["pos"] as Vector2).is_equal_approx(detector_origin["pos"]))
+	var charge_before_manual_close := float(detector["charge"])
+	game.phase = "ended"
+	game.trapped_by["monster"] = "test-trap"
+	game._use_selected_tool("monster")
+	assert(not bool(detector["active"]))
+	assert(is_equal_approx(float(detector["charge"]), charge_before_manual_close))
+	game.phase = "hunt"
+	game.trapped_by["monster"] = ""
+	game._use_selected_tool("monster")
+	assert(bool(detector["active"]))
+	var detector_trinket := {
+		"id": "detector-trinket",
+		"kind": "trinket",
+		"label": "银汤匙",
+		"value": 2,
+	}
+	storage["contents"].append(detector_trinket)
+	var renderer_script: Script = load("res://scripts/world_25d.gd")
+	var value_renderer: World25D = renderer_script.new()
+	assert(value_renderer._furniture_content_value(storage) == 7)
+	assert(value_renderer._item_visual_info(detector_trinket)["path"] == "res://assets/25d/items/silver_spoon.png")
+	assert(value_renderer._item_visual_info({
+		"id": "wild-treasure-test",
+		"kind": "treasure",
+		"label": "古钱币",
+		"value": 2,
+	})["path"] == "res://GJGamejam素材/2.5D物品/copper_coin.png")
+	value_renderer.free()
+	storage["contents"].resize(1)
 
 	storage["contents"].clear()
 	game.tool_inventories["monster"] = [game._make_tool_instance("alarm", "alarm-test")]
@@ -118,7 +158,12 @@ func _initialize() -> void:
 	trap["armed_at"] = 0.0
 	game._update_devices()
 	assert(game.trapped_by["monster"] == trap["id"])
-	for index in range(game.TRAP_ESCAPE_PRESSES):
+	assert(trap["state"] == "sprung")
+	assert(bool(game.monster["trapped"]))
+	assert(game.monster["trap_prompt"] == "A")
+	game._handle_trap_escape_input("monster", KEY_NONE, KEY_A)
+	assert(game.monster["trap_prompt"] == "D")
+	for index in range(1, game.TRAP_ESCAPE_PRESSES):
 		var left := index % 2 == 0
 		game._handle_trap_escape_input(
 			"monster",
@@ -127,6 +172,8 @@ func _initialize() -> void:
 		)
 	assert(game.trapped_by["monster"] == "")
 	assert(trap["state"] == "recoverable")
+	assert(not bool(game.monster["trapped"]))
+	assert(game.monster["trap_prompt"] == "")
 
 	game.tool_inventories["monster"] = [game._make_tool_instance("adrenaline", "adrenaline-test")]
 	game.tool_selected["monster"] = 0
@@ -141,9 +188,16 @@ func _initialize() -> void:
 	game.tool_inventories["monster"] = [game._make_tool_instance("decoy", "decoy-test")]
 	game.tool_selected["monster"] = 0
 	var before_dash: Vector2 = game.monster["pos"]
+	var decoy_started_at: float = game.elapsed
 	game._use_decoy("monster")
 	assert((game.monster["pos"] as Vector2).x > before_dash.x)
 	assert(test_room["items"].any(func(item): return str(item.get("device_type", "")) == "decoy"))
+	var decoy: Dictionary = test_room["items"].back()
+	assert(is_equal_approx(float(decoy["expires"]), decoy_started_at + 10.0))
+	assert((decoy["move_direction"] as Vector2).is_equal_approx(Vector2.LEFT))
+	var decoy_before_run: Vector2 = decoy["pos"]
+	game._update_devices(0.25)
+	assert((decoy["pos"] as Vector2).x < decoy_before_run.x)
 
 	game.tool_inventories["monster"] = [game._make_tool_instance("phonograph", "phonograph-test")]
 	game.tool_selected["monster"] = 0
@@ -247,6 +301,10 @@ func _initialize() -> void:
 	assert(game.noises.size() > robot_noise_count)
 	assert(bool(game.noises.back()["global"]))
 	assert(str(game.noises.back()["label"]) == "巡夜偶警报")
+	assert(str(game.noises.back().get("follow_device_id", "")) == str(robot["id"]))
+	var robot_noise_location: Dictionary = game._noise_location(game.noises.back())
+	assert((robot_noise_location["room"] as Vector2i) == robot_room_after)
+	assert((robot_noise_location["pos"] as Vector2).is_equal_approx(robot["pos"]))
 
 	var transition_delta := Vector2i.ZERO
 	var transition_motion := Vector2.ZERO

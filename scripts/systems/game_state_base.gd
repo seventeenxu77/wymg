@@ -24,15 +24,22 @@ const HIT_LUNGE_TIME := 0.14
 const HIT_RECOVER_TIME := 0.16
 const HIT_WINDUP_DISTANCE := 0.22
 const HIT_LUNGE_DISTANCE := 0.38
+const MONSTER_ATTACK_COOLDOWN := 10.0
+const MONSTER_ATTACK_ANIMATION_SECONDS := 0.55
+const MONSTER_ATTACK_HIT_STUN_SECONDS := 0.8
+const AFTERIMAGE_LINGER_SECONDS := 1.1 * 1.25
+const VOICE_COOLDOWN_SECONDS := 1.0
+const VOICE_NOISE_SECONDS := 3.0
 const TOOL_INVENTORY_CAPACITY := 3
-const DETECTOR_BATTERY_SECONDS := 18.0
+const DETECTOR_BATTERY_SECONDS := 54.0
 const DETECTOR_NOISE_INTERVAL := 3.0
 const TRAP_ESCAPE_PRESSES := 20
 const TRAP_TRIGGER_RADIUS := 0.34
 const TRAP_ARM_DELAY := 0.6
 const ADRENALINE_SECONDS := 6.0
 const FATIGUE_SECONDS := 3.0
-const DECOY_SECONDS := 5.0
+const DECOY_SECONDS := 10.0
+const DECOY_SPEED := ACTOR_SPEED
 const DECOY_DASH_DISTANCE := 1.15
 const PHONOGRAPH_DELAY := 2.0
 const PHONOGRAPH_SECONDS := 10.0
@@ -52,7 +59,7 @@ const THIEF_REVEAL_SECONDS := 1.0
 const NOISE_SAMPLE_RATE := 11025
 const MATCH_ROUNDS := 4
 const HUNT_SECONDS := 8 * 60
-const COINS_PER_LOOT_VALUE := 5
+const COINS_PER_LOOT_VALUE := 1
 const ENTRANCE_ROOM := Vector2i(0, 5)
 const ENTRANCE_POS := Vector2(0.5, 4.5)
 const MONSTER_SPAWN_ROOM := Vector2i(5, 0)
@@ -79,20 +86,38 @@ const DIRECTIONS := [
 ]
 
 const TREASURES := [
-	{"id": "treasure-2", "kind": "treasure", "label": "银制烛台", "value": 2},
-	{"id": "treasure-3", "kind": "treasure", "label": "祖母绿胸针", "value": 3},
-	{"id": "treasure-5", "kind": "treasure", "label": "怪物之心", "value": 5},
+	{
+		"id": "treasure-2",
+		"kind": "treasure",
+		"label": "银制烛台",
+		"value": 4,
+		"description": "沾着凝固烛泪的旧银烛台，仍映着宅邸过去的微光。",
+	},
+	{
+		"id": "treasure-3",
+		"kind": "treasure",
+		"label": "祖母绿胸针",
+		"value": 6,
+		"description": "镶嵌祖母绿的古老胸针，宝石深处浮动着幽绿色泽。",
+	},
+	{
+		"id": "treasure-5",
+		"kind": "treasure",
+		"label": "怪物之心",
+		"value": 10,
+		"description": "离开身体后仍在搏动的异形心脏，是宅邸中最危险的珍藏。",
+	},
 ]
 
 const TRINKETS := ["旧怀表", "银汤匙", "铜制烟盒", "珍珠纽扣"]
 const WILD_TREASURE_COUNT := 10
-const WILD_TREASURE := {"id": "treasure-1", "kind": "treasure", "label": "古铜币", "value": 1}
+const WILD_TREASURE := {"id": "treasure-1", "kind": "treasure", "label": "古钱币", "value": 2}
 
 const TOOL_DEFS := {
 	"detector": {
 		"label": "藏品探测器",
 		"short": "探测",
-		"description": "开启后探测同一房间内的藏品信号，电量有限。",
+		"description": "开启后探测同一房间内的藏品信号；总电量54秒，可随时关闭以保留电量。",
 		"color": Color("#78d7e8"),
 		"price": 5,
 	},
@@ -120,7 +145,7 @@ const TOOL_DEFS := {
 	"decoy": {
 		"label": "替身玩偶",
 		"short": "替身",
-		"description": "留下一个替身，同时向面朝方向快速位移。",
+		"description": "本体向前位移，替身沿反方向奔跑10秒。",
 		"color": Color("#b98be2"),
 		"price": 3,
 	},
@@ -172,6 +197,7 @@ const SOUND_PATHS := {
 	"furniture_open": "res://GJGamejam素材/music/openboxsound.mp3",
 	"attack": "res://GJGamejam素材/music/swordslashsound.mp3",
 	"scream": "res://GJGamejam素材/music/malehorrorscream.mp3",
+	"laugh": "res://GJGamejam素材/music/witchlaugh.mp3",
 	"monster_win": "res://GJGamejam素材/music/witchlaugh.mp3",
 }
 
@@ -185,6 +211,7 @@ var furniture_hit_actions := {"monster": {}, "thief": {}}
 var active_storage_id := ""
 var selected_treasure := 0
 var loot_value := 0
+var stolen_monster_value := 0
 var extracted_value := 0
 var has_extracted := false
 var pills := 0
@@ -202,6 +229,8 @@ var logs: Array[String] = []
 var restart_rect := Rect2()
 var early_rect := Rect2()
 var result_restart_rect := Rect2()
+var match_end_selected := 0
+var match_end_rects: Dictionary = {}
 var help_open := {"monster": false, "thief": false}
 var help_rects := {"monster": Rect2(), "thief": Rect2()}
 var tool_inventories := {"monster": [], "thief": []}
@@ -235,6 +264,10 @@ var main_menu_panel := "root"
 var main_menu_selected := 0
 var main_menu_volume_step := 8
 var main_menu_rects: Dictionary = {}
+var game_pause_open := false
+var game_pause_selected := 0
+var game_pause_rects: Dictionary = {}
+var tutorial_transition_active := false
 
 var font: Font
 var world_25d: World25D

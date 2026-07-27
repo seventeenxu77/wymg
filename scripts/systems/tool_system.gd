@@ -79,6 +79,8 @@ func _pick_up_nearby(role: String) -> void:
 	nearest["collected"] = true
 	if str(nearest["kind"]) in ["treasure", "trinket"]:
 		loot_value += int(nearest["value"])
+		if _is_monster_treasure(nearest):
+			stolen_monster_value += int(nearest["value"])
 		_push_log("盗贼携带%s，身上价值 %d。" % [nearest["label"], loot_value])
 	else:
 		pills += 1
@@ -137,13 +139,20 @@ func _thief_search() -> void:
 
 
 func _use_selected_tool(role: String) -> void:
+	var tool := _selected_tool(role)
+	if (
+		not tool.is_empty()
+		and str(tool.get("tool_type", "")) == "detector"
+		and bool(tool.get("active", false))
+	):
+		_toggle_detector(role, tool)
+		return
 	if phase == "ended" or phase == "ready" or (phase == "hide" and role == "thief"):
 		return
 	if not _role_can_act(role):
 		return
 	if _activate_nearby_phonograph(role):
 		return
-	var tool := _selected_tool(role)
 	if tool.is_empty():
 		_push_log("%s没有可用道具。" % _role_name(role))
 		return
@@ -358,13 +367,14 @@ func _use_decoy(role: String) -> void:
 	var decoy := _spawn_device(role, "decoy", actor["pos"])
 	decoy["expires"] = elapsed + DECOY_SECONDS
 	decoy["character_role"] = role
-	_consume_selected_tool(role)
 	var facing: Vector2 = actor.get("facing", _direction_vector(str(actor["dir"])))
+	decoy["move_direction"] = -facing.normalized()
+	_consume_selected_tool(role)
 	_displace_actor(role, facing.normalized() * DECOY_DASH_DISTANCE)
 	_add_noise(role, "替身位移")
 	if role == "thief":
 		_reveal_thief()
-	_push_log("%s留下替身并向前位移。" % _role_name(role))
+	_push_log("%s向前位移，替身沿反方向奔跑10秒。" % _role_name(role))
 
 
 func _place_phonograph(role: String) -> void:
@@ -409,7 +419,7 @@ func _start_teleporter(role: String) -> void:
 	effects["teleport_started"] = elapsed
 	effects["teleport_ends"] = elapsed + TELEPORT_CHANNEL_SECONDS
 	_consume_selected_tool(role)
-	_add_noise(role, "传送器轰鸣", {}, 0.0, TELEPORT_CHANNEL_SECONDS, true)
+	_add_noise(role, "传送器轰鸣", {}, 0.0, TELEPORT_CHANNEL_SECONDS, true, true)
 	_reveal_thief()
 	_push_log("传送器开始持续轰鸣，5秒后携带全部财物撤离。")
 
@@ -471,7 +481,12 @@ func _handle_trap_escape_input(role: String, key: Key, physical: Key) -> bool:
 	if (expects_left and pressed_left) or (not expects_left and pressed_right):
 		trap_escape_progress[role] = int(trap_escape_progress[role]) + 1
 		trap_expected_left[role] = not expects_left
-		_add_noise(role, "捕兽夹挣扎", {}, 0.12, 2.0, true)
+		var next_left: bool = bool(trap_expected_left[role])
+		var prompt := "A" if next_left else "D"
+		if player != "A":
+			prompt = "←" if next_left else "→"
+		_get_actor(role)["trap_prompt"] = prompt
+		_add_noise(role, "捕兽夹挣扎", {}, 0.12, 2.0, true, true)
 		if int(trap_escape_progress[role]) >= TRAP_ESCAPE_PRESSES:
 			_escape_trap(role)
 	return true
@@ -490,6 +505,9 @@ func _escape_trap(role: String) -> void:
 	trapped_by[role] = ""
 	trap_escape_progress[role] = 0
 	trap_expected_left[role] = true
+	var actor := _get_actor(role)
+	actor["trapped"] = false
+	actor["trap_prompt"] = ""
 	_push_log("%s挣脱捕兽夹，夹子现在可以被任意一方拾取。" % _role_name(role))
 
 
@@ -585,7 +603,7 @@ func _update_tool_states(delta: float) -> void:
 				furniture["detector_active"] = true
 			if elapsed >= float(tool.get("next_noise", 0.0)):
 				tool["next_noise"] = elapsed + DETECTOR_NOISE_INTERVAL
-				_add_noise(role, "探测器脉冲", {}, 0.0, 2.0, true)
+				_add_noise(role, "探测器脉冲", {}, 0.0, 2.0, true, true)
 		var effects: Dictionary = status_effects[role]
 		var teleport_ends := float(effects.get("teleport_ends", -1.0))
 		if teleport_ends > 0.0 and elapsed >= teleport_ends:
@@ -648,9 +666,10 @@ func _check_robot_alarm(robot: Dictionary, room: Dictionary) -> void:
 		room["coord"],
 		robot["pos"],
 		0.0,
-		ROBOT_ALARM_SECONDS,
-		true,
-	)
+			ROBOT_ALARM_SECONDS,
+			true,
+			str(robot["id"]),
+		)
 	_push_log(
 		"%s的巡夜偶在房间(%d,%d)发现敌人，警报持续3秒！"
 		% [owner, room["coord"].x + 1, room["coord"].y + 1]
@@ -825,6 +844,7 @@ func _move_robot_axis(
 
 func _update_devices(delta := 0.0) -> void:
 	_update_robots(delta)
+	_update_decoys(delta)
 	for room in rooms:
 		for item in room["items"]:
 			if bool(item.get("collected", false)) or str(item.get("kind", "")) != "device":
@@ -856,10 +876,14 @@ func _update_devices(delta := 0.0) -> void:
 						if (actor["pos"] as Vector2).distance_to(item["pos"]) <= TRAP_TRIGGER_RADIUS:
 							item["state"] = "sprung"
 							item["trapped_role"] = role
+							item["sprung_at"] = elapsed
 							item["next_noise"] = elapsed + 1.0
 							trapped_by[role] = str(item["id"])
 							trap_escape_progress[role] = 0
 							trap_expected_left[role] = true
+							actor["trapped"] = true
+							actor["trapped_started_at"] = elapsed
+							actor["trap_prompt"] = "A" if _player_for_role(role) == "A" else "←"
 							_cancel_teleporter(role, "踩中捕兽夹")
 							_add_noise_at(role, "捕兽夹触发", room["coord"], item["pos"], 0.0, 3.0, true)
 							_push_log("%s踩中捕兽夹，左右键交替20次才能挣脱！" % _role_name(role))
@@ -884,6 +908,34 @@ func _update_devices(delta := 0.0) -> void:
 							2.0,
 							true,
 						)
+
+
+func _update_decoys(delta: float) -> void:
+	if delta <= 0.0:
+		return
+	var decoys: Array = []
+	for room in rooms:
+		for item in room["items"]:
+			if (
+				not bool(item.get("collected", false))
+				and str(item.get("kind", "")) == "device"
+				and str(item.get("device_type", "")) == "decoy"
+				and elapsed < float(item.get("expires", INF))
+			):
+				decoys.append(item)
+	for decoy in decoys:
+		var found := _find_device_entry(str(decoy.get("id", "")))
+		if found.is_empty():
+			continue
+		var direction: Vector2 = decoy.get("move_direction", Vector2.ZERO)
+		if direction.is_zero_approx():
+			continue
+		var room: Dictionary = found["room"]
+		_move_robot_motion(
+			decoy,
+			room["coord"],
+			direction.normalized() * DECOY_SPEED * delta,
+		)
 
 
 func _destroy_device_in_front(role: String, types: Array) -> bool:

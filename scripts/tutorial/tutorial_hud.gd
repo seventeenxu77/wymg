@@ -10,10 +10,13 @@ const MUTED := Color("#979c94")
 const GOLD := Color("#e6cc64")
 const MONSTER := Color("#ff6b4a")
 const THIEF := Color("#66d9c3")
+const KEY_UP_TEXTURE: Texture2D = preload("res://assets/ui/tutorial_key_up.svg")
+const KEY_DOWN_TEXTURE: Texture2D = preload("res://assets/ui/tutorial_key_down.svg")
 
 var game: Node
 var tutorial: Node
 var font: Font
+var was_visible := false
 
 
 func setup(host: Node, tutorial_system: Node) -> void:
@@ -25,14 +28,23 @@ func setup(host: Node, tutorial_system: Node) -> void:
 
 
 func _process(_delta: float) -> void:
-	if tutorial and tutorial.active:
+	var visible_now: bool = (
+		tutorial != null
+		and bool(tutorial.active)
+		and not bool(game.main_menu_open)
+		and game.get("tutorial_transition_active") != true
+	)
+	if visible_now or was_visible:
 		queue_redraw()
+	was_visible = visible_now
 
 
 func _draw() -> void:
 	if not tutorial or not tutorial.active:
 		return
 	if bool(game.main_menu_open):
+		return
+	if game.get("tutorial_transition_active") == true:
 		return
 	var size := get_viewport_rect().size
 	draw_rect(Rect2(Vector2.ZERO, size), BG)
@@ -47,6 +59,8 @@ func _draw() -> void:
 		Rect2(Vector2(size.x * 0.5 - 2.0, 8.0), Vector2(4.0, size.y - 16.0)),
 		Color("#32362f"),
 	)
+	if bool(tutorial.finish_confirm_open):
+		_draw_finish_confirm(size)
 	if bool(game.gm_console_open):
 		_draw_gm_console(size)
 
@@ -107,6 +121,7 @@ func _draw_selection(panel: Rect2, player: String, session: Dictionary) -> void:
 		GOLD if thief_done or monster_done else TEXT,
 	)
 	var controls := "W/S 选择 · R 确认" if player == "A" else "↑/↓ 选择 · Num1 确认"
+	controls += " · %s 直接退出教学" % ("T" if player == "A" else "Num-")
 	_text_center(controls, Rect2(Vector2(panel.position.x, panel.end.y - 52), Vector2(panel.size.x, 24)), 11, accent)
 
 
@@ -114,16 +129,58 @@ func _draw_ready(panel: Rect2, player: String, session: Dictionary) -> void:
 	var accent := THIEF if player == "A" else MONSTER
 	var center := panel.get_center()
 	_text_center("玩家 %s 已退出教学" % player, Rect2(center - Vector2(220, 100), Vector2(440, 34)), 22, TEXT)
-	_text_center("等待另一位玩家退出教学后开始正式比赛", Rect2(center - Vector2(240, 48), Vector2(480, 28)), 12, MUTED)
+	_text_center("等待另一位玩家退出教学后共同确认", Rect2(center - Vector2(240, 48), Vector2(480, 28)), 12, MUTED)
 	var button := Rect2(center + Vector2(-150, 30), Vector2(300, 52))
 	draw_rect(button, Color("#272c27"))
 	draw_rect(button, accent, false, 2)
 	_text_center("取消准备，返回教学选择", button, 13, TEXT)
 	tutorial.selection_rects[player] = [button]
 	_text_center(
-		"点击按钮，或按%s" % ("R" if player == "A" else "Num1"),
+		"点击按钮，或按%s返回选择；%s取消等待" % [
+			"R" if player == "A" else "Num1",
+			"T" if player == "A" else "Num-",
+		],
 		Rect2(Vector2(panel.position.x, button.end.y + 14), Vector2(panel.size.x, 24)),
 		10,
+		MUTED,
+	)
+
+
+func _draw_finish_confirm(size: Vector2) -> void:
+	draw_rect(Rect2(Vector2.ZERO, size), Color(0.01, 0.012, 0.01, 0.82))
+	var card_size := Vector2(minf(620.0, size.x - 80.0), 320.0)
+	var card := Rect2((size - card_size) * 0.5, card_size)
+	var pulse := (sin(tutorial.elapsed * 4.5) + 1.0) * 0.5
+	draw_rect(card.grow(5.0), Color(GOLD, 0.12 + pulse * 0.1), false, 5.0)
+	draw_rect(card, Color("#151915"))
+	draw_rect(card, GOLD, false, 2.0)
+	_text_center("双方已退出教程", Rect2(card.position + Vector2(0, 34), Vector2(card.size.x, 38)), 24, TEXT)
+	_text_center(
+		"现在要开始一局全新的游戏吗？",
+		Rect2(card.position + Vector2(0, 84), Vector2(card.size.x, 28)),
+		14,
+		MUTED,
+	)
+	var gap := 18.0
+	var button_width := (card.size.x - 78.0 - gap) * 0.5
+	var buttons := [
+		Rect2(card.position + Vector2(30, 142), Vector2(button_width, 76)),
+		Rect2(card.position + Vector2(48 + button_width, 142), Vector2(button_width, 76)),
+	]
+	tutorial.finish_confirm_rects = buttons
+	var labels := ["冲", "先等等"]
+	var details := ["清理教程并开始第一局", "清理教程并返回主菜单"]
+	for index in range(2):
+		var selected := int(tutorial.finish_confirm_selection) == index
+		var rect: Rect2 = buttons[index]
+		draw_rect(rect, Color("#32352d") if selected else PANEL_ALT)
+		draw_rect(rect, GOLD if selected else LINE, false, 3.0 if selected else 1.0)
+		_text_center(labels[index], Rect2(rect.position, Vector2(rect.size.x, 42)), 18, GOLD if selected else TEXT)
+		_text_center(details[index], Rect2(rect.position + Vector2(0, 39), Vector2(rect.size.x, 26)), 10, TEXT if selected else MUTED)
+	_text_center(
+		"A/D 或方向键选择 · 空格确认当前选项 · Esc 返回主菜单",
+		Rect2(Vector2(card.position.x, card.end.y - 64), Vector2(card.size.x, 28)),
+		11,
 		MUTED,
 	)
 
@@ -136,7 +193,12 @@ func _draw_running(panel: Rect2, player: String, session: Dictionary) -> void:
 	var exit_button := Rect2(Vector2(panel.end.x - 158, panel.position.y + 14), Vector2(128, 34))
 	draw_rect(exit_button, Color("#2b2523"))
 	draw_rect(exit_button, Color("#d87766"), false, 1.5)
-	_text_center("退出当前教程", exit_button, 11, Color("#f2b2a7"))
+	_text_center(
+		"退出教程 [%s]" % ("T" if player == "A" else "Num-"),
+		exit_button,
+		10,
+		Color("#f2b2a7"),
+	)
 	tutorial.exit_rects[player] = exit_button
 
 	var room_side := minf(panel.size.x - 44.0, panel.size.y - 224.0)
@@ -153,13 +215,17 @@ func _draw_running(panel: Rect2, player: String, session: Dictionary) -> void:
 	_draw_room_progress(room_rect, session)
 	_draw_world_prompt(room_rect, session)
 	_draw_noise_prompt(room_rect, session)
+	_draw_action_feedback(room_rect, session)
+	_draw_key_prompt(room_rect, player, session)
 
 	var objective_card := Rect2(
 		Vector2(panel.position.x + 22.0, room_rect.end.y + 12.0),
 		Vector2(panel.size.x - 44.0, panel.end.y - room_rect.end.y - 34.0),
 	)
 	draw_rect(objective_card, PANEL_ALT)
-	draw_rect(objective_card, LINE, false, 1.0)
+	var prompt_pulse := (sin(tutorial.elapsed * 7.0) + 1.0) * 0.5
+	draw_rect(objective_card.grow(2.0 + prompt_pulse * 2.0), Color(accent, 0.12 + prompt_pulse * 0.16), false, 3.0)
+	draw_rect(objective_card, accent.lerp(TEXT, prompt_pulse * 0.35), false, 1.5 + prompt_pulse * 1.5)
 	_text("当前目标 · %s" % tutorial.objective_title(session), objective_card.position + Vector2(16, 26), 13, accent)
 	_multiline(
 		tutorial.objective_detail(player, session),
@@ -178,6 +244,57 @@ func _draw_running(panel: Rect2, player: String, session: Dictionary) -> void:
 		draw_rect(state_rect, THIEF if hidden else LINE, false, 1.0)
 		_text_center("已隐匿" if hidden else "可被发现", state_rect, 10, THIEF if hidden else MUTED)
 	_draw_context_overlays(panel, room_rect, player, session)
+
+
+func _draw_key_prompt(room_rect: Rect2, player: String, session: Dictionary) -> void:
+	if bool(session.get("help_open", false)) or bool(session.get("panel_open", false)) or bool(session.get("shop_open", false)):
+		return
+	if not bool(session.get("projection_ready", false)):
+		return
+	var key_label := str(tutorial.prompt_key(player, session))
+	if key_label == "":
+		return
+	var actor: Dictionary = session[str(session["role"])]
+	var renderer: World25D = session["renderer"]
+	var normalized := renderer.project_normalized(
+		str(session["role"]),
+		actor["room"],
+		actor["pos"],
+		0.05,
+	)
+	var center := room_rect.position + normalized * room_rect.size + Vector2(0, 42)
+	var actually_pressed := bool(tutorial.is_prompt_key_pressed(player, key_label))
+	var demo_pressed := fmod(tutorial.elapsed, 0.9) >= 0.52
+	var pressed := actually_pressed or demo_pressed
+	var key_size := Vector2(58, 58)
+	var key_rect := Rect2(center - key_size * 0.5 + Vector2(0, 5 if pressed else 0), key_size)
+	draw_texture_rect(KEY_DOWN_TEXTURE if pressed else KEY_UP_TEXTURE, key_rect, false)
+	var font_size := 9 if key_label.length() >= 4 else 13
+	_text_center(
+		key_label,
+		Rect2(
+			key_rect.grow(-7).position + Vector2(0, -5 if not pressed else -2),
+			key_rect.grow(-7).size,
+		),
+		font_size,
+		Color("#24241f"),
+	)
+
+
+func _draw_action_feedback(room_rect: Rect2, session: Dictionary) -> void:
+	if not bool(session.get("projection_ready", false)):
+		return
+	var until := maxf(float(session.get("pickup_until", 0.0)), float(session.get("tool_effect_until", 0.0)))
+	if tutorial.elapsed >= until:
+		return
+	var actor: Dictionary = session[str(session["role"])]
+	var renderer: World25D = session["renderer"]
+	var normalized := renderer.project_normalized(str(session["role"]), actor["room"], actor["pos"], 0.9)
+	var center := room_rect.position + normalized * room_rect.size
+	var remaining := clampf(until - tutorial.elapsed, 0.0, 0.7)
+	var progress := 1.0 - remaining / 0.7
+	var color := GOLD if tutorial.elapsed < float(session.get("pickup_until", 0.0)) else THIEF
+	draw_arc(center, 20.0 + progress * 34.0, 0, TAU, 36, Color(color, 1.0 - progress), 3.0)
 
 
 func _draw_room_progress(room_rect: Rect2, session: Dictionary) -> void:
@@ -265,12 +382,14 @@ func _draw_help_overlay(room_rect: Rect2, player: String, role: String) -> void:
 			"WASD　移动\nQ / E　逆时针 / 顺时针旋转\nG　撞击家具\nR　拾取 / 面板存取\n"
 			+ ("空格　攻击\n" if role == "monster" else "")
 			+ "Z / X　选择道具\nF　使用道具\nF1 / Esc　关闭帮助"
+			+ "\nT　退出当前教程"
 		)
 	else:
 		controls = (
 			"方向键　移动\nNum7 / Num9　逆时针 / 顺时针旋转\nNum0　撞击家具\nNum1　拾取 / 面板存取\n"
 			+ ("Num2　攻击\n" if role == "monster" else "")
 			+ "Num4 / Num6　选择道具\nNum3　使用道具\nNum+ / Esc　关闭帮助"
+			+ "\nNum-　退出当前教程"
 		)
 	_multiline(controls, card.position + Vector2(42, 82), card.size.x - 84, 13, TEXT, 29)
 	_text_center("正式比赛中，两位玩家会在四局内交替扮演怪物与盗贼。", Rect2(Vector2(card.position.x, card.end.y - 60), Vector2(card.size.x, 26)), 10, MUTED)
@@ -282,22 +401,27 @@ func _draw_storage_overlay(room_rect: Rect2, player: String, session: Dictionary
 		Vector2(room_rect.size.x - 68, 146),
 	)
 	draw_rect(card, Color(0.035, 0.04, 0.035, 0.98))
-	draw_rect(card, GOLD, false, 2)
+	var pulse := (sin(tutorial.elapsed * 8.0) + 1.0) * 0.5
+	draw_rect(card.grow(2.0 + pulse * 2.0), Color(GOLD, 0.16 + pulse * 0.2), false, 3.0)
+	draw_rect(card, GOLD, false, 2.0 + pulse)
 	_text("家具面板", card.position + Vector2(18, 29), 14, GOLD)
-	_text("随身藏品：银制烛台 · 价值2", card.position + Vector2(18, 61), 11, TEXT)
-	_text("放入后总耐久：家具2 + 藏品附加2 = 4", card.position + Vector2(18, 87), 11, TEXT)
+	_text("随身藏品：银制烛台 · 价值4", card.position + Vector2(18, 61), 11, TEXT)
+	_text("放入后总耐久：家具2 + 藏品附加4 = 6", card.position + Vector2(18, 87), 11, TEXT)
 	_text_center(
 		"按%s放入藏品" % ("R" if player == "A" else "Num1"),
 		Rect2(Vector2(card.position.x, card.end.y - 38), Vector2(card.size.x, 22)),
 		11,
 		GOLD,
 	)
+	_draw_overlay_key(card, "R" if player == "A" else "Num1")
 
 
 func _draw_shop_overlay(panel: Rect2, player: String, session: Dictionary) -> void:
 	var card := panel.grow(-26)
 	draw_rect(card, Color(0.025, 0.03, 0.025, 0.99))
-	draw_rect(card, GOLD, false, 2)
+	var pulse := (sin(tutorial.elapsed * 8.0) + 1.0) * 0.5
+	draw_rect(card.grow(2.0 + pulse * 2.0), Color(GOLD, 0.14 + pulse * 0.2), false, 3.0)
+	draw_rect(card, GOLD, false, 2.0 + pulse)
 	_text("教学商店 · %d金币" % int(session["shop_coins"]), card.position + Vector2(24, 34), 17, TEXT)
 	_text("购买后先进入仓库，再从仓库放入装备栏。教学资源不会带入正式比赛。", card.position + Vector2(24, 61), 10, MUTED)
 	var gap := 10.0
@@ -323,9 +447,22 @@ func _draw_shop_overlay(panel: Rect2, player: String, session: Dictionary) -> vo
 	var controls := (
 		"A/D 切换栏位 · R 购买/装备 · H 准备"
 		if player == "A"
-		else "Num4/6 切换栏位 · Num1 购买/装备 · Num5 准备"
+		else "←/→ 切换栏位 · Num1 购买/装备 · Num5 准备"
 	)
 	_text_center(controls, Rect2(Vector2(card.position.x, card.end.y - 58), Vector2(card.size.x, 24)), 11, GOLD)
+	_draw_overlay_key(card, str(tutorial.prompt_key(player, session)))
+
+
+func _draw_overlay_key(card: Rect2, key_label: String) -> void:
+	var pressed := fmod(tutorial.elapsed, 0.9) >= 0.52
+	var key_rect := Rect2(Vector2(card.end.x - 66, card.end.y - 66 + (4 if pressed else 0)), Vector2(48, 48))
+	draw_texture_rect(KEY_DOWN_TEXTURE if pressed else KEY_UP_TEXTURE, key_rect, false)
+	_text_center(
+		key_label,
+		Rect2(key_rect.grow(-5).position + Vector2(0, -3), key_rect.grow(-5).size),
+		9 if key_label.length() > 2 else 12,
+		Color("#24241f"),
+	)
 
 
 func _draw_gm_console(size: Vector2) -> void:

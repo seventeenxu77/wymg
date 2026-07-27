@@ -64,10 +64,10 @@ func _handle_shop_input(key: Key, physical: Key) -> void:
 	elif key == KEY_DOWN:
 		player = "B"
 		action = "next"
-	elif key == KEY_KP_4:
+	elif key == KEY_LEFT:
 		player = "B"
 		action = "focus_left"
-	elif key == KEY_KP_6:
+	elif key == KEY_RIGHT:
 		player = "B"
 		action = "focus_right"
 	elif key == KEY_KP_1:
@@ -143,10 +143,7 @@ func _execute_gm_command(command_line: String) -> void:
 		"next":
 			_gm_next_stage()
 		"help":
-			gm_output = (
-				"next 下一阶段｜gold A 50 加金币｜give A adrenaline 发道具"
-				+ "｜add robot 给A装备｜tutorial 教学｜menu 返回主界面"
-			)
+			gm_output = _gm_help_text()
 		"gold":
 			if parts.size() != 3 or str(parts[1]).to_upper() not in ["A", "B"] or not str(parts[2]).is_valid_int():
 				gm_output = "用法：gold A 50"
@@ -162,16 +159,129 @@ func _execute_gm_command(command_line: String) -> void:
 			_gm_give_tool(str(parts[1]).to_upper(), str(parts[2]).to_lower())
 		"add":
 			_gm_add_command(parts)
+		"trans":
+			_gm_trans_command(parts)
 		"tutorial":
 			_gm_tutorial_command(parts)
+		"pause":
+			_gm_pause_command(parts)
 		"menu":
 			_gm_menu_command(parts)
+		"cooldown":
+			_gm_cooldown_command(parts)
 		_:
 			gm_output = "未知命令：%s。输入 help 查看命令。" % command
 
 
+func _gm_help_text() -> String:
+	var tool_lines: Array[String] = []
+	for index in range(0, SHOP_TOOL_TYPES.size(), 4):
+		tool_lines.append("  ".join(
+			SHOP_TOOL_TYPES.slice(index, mini(index + 4, SHOP_TOOL_TYPES.size()))
+		))
+	return "\n".join([
+		"GM 命令帮助　（A/B 指玩家；每局交换身份后仍按玩家字母执行）",
+		"help　　　　　　　　　显示本帮助",
+		"next　　　　　　　　　跳到下一阶段／结束当前局",
+		"gold A 50　　　　　　　给玩家A增加50金币；可改为B或负数",
+		"give A adrenaline　　　 给玩家A发放一个道具，需填写英文ID",
+		"add robot　　　　　　　直接给玩家A装备道具；也可写 add B robot",
+		"trans A　　　　　　　　把玩家B传送到玩家A的位置；trans B 反向",
+		"cooldown reset　　　　 重置当前怪物的攻击冷却",
+		"cooldown reset A　　　 仅当玩家A是当前怪物时重置；也可写B或all",
+		"tutorial　　　　　　　 打开双人教程选择",
+		"tutorial A thief　　　　让玩家A进入盗贼教程；monster 为怪物教程",
+		"tutorial next A　　　　 跳过A当前步骤；reset A 重置；stop 退出教程",
+		"pause / pause off　　　 打开／关闭游戏内暂停菜单",
+		"menu / menu off　　　　 返回／关闭主菜单",
+		"可用道具英文 ID：",
+	] + tool_lines)
+
+
+func _gm_cooldown_command(parts: PackedStringArray) -> void:
+	if parts.size() < 2 or parts.size() > 3 or str(parts[1]).to_lower() != "reset":
+		gm_output = "Usage: cooldown reset [A|B|all]"
+		return
+	var target := "ALL" if parts.size() == 2 else str(parts[2]).to_upper()
+	if target not in ["A", "B", "ALL"]:
+		gm_output = "Usage: cooldown reset [A|B|all]"
+		return
+	var tutorial = get("tutorial_system")
+	if tutorial != null and bool(tutorial.get("active")):
+		var reset_count := 0
+		var sessions: Dictionary = tutorial.get("sessions")
+		for player in sessions:
+			if target != "ALL" and str(player) != target:
+				continue
+			var session: Dictionary = sessions[player]
+			session["attack_until"] = tutorial.get("elapsed")
+			reset_count += 1
+		gm_output = "Reset attack cooldown for %d tutorial session(s)." % reset_count
+		return
+	var monster_player := _player_for_role("monster")
+	if target != "ALL" and target != monster_player:
+		gm_output = "Player %s is not the current monster; no attack cooldown was reset." % target
+		return
+	attack_until = elapsed
+	gm_output = "Attack cooldown reset for player %s (monster)." % monster_player
+
+
+func _gm_trans_command(parts: PackedStringArray) -> void:
+	if parts.size() != 2:
+		gm_output = "用法：trans A（把玩家B传送到玩家A的位置）"
+		return
+	var destination_player := str(parts[1]).to_upper()
+	if destination_player not in ["A", "B"]:
+		gm_output = "目标玩家只能填写 A 或 B。"
+		return
+	var tutorial = get("tutorial_system")
+	if tutorial != null and bool(tutorial.get("active")):
+		gm_output = "trans 仅用于正式游戏，教程中的两侧场景彼此隔离。"
+		return
+	if monster.is_empty() or thief.is_empty():
+		gm_output = "当前没有可传送的双方角色。"
+		return
+
+	var moved_player := "B" if destination_player == "A" else "A"
+	var destination_role := _role_for_player(destination_player)
+	var moved_role := _role_for_player(moved_player)
+	var destination_actor := _get_actor(destination_role)
+	var moved_actor := _get_actor(moved_role)
+
+	dragging[moved_role] = ""
+	furniture_hit_actions[moved_role] = {}
+	moved_actor["room"] = destination_actor["room"]
+	moved_actor["pos"] = destination_actor["pos"]
+	moved_actor["impact_visual_offset"] = Vector2.ZERO
+	moved_actor["moving"] = false
+	thief["gm_force_visible"] = true
+	thief["hidden_from_monster"] = false
+
+	if world_25d:
+		var attack_active := (
+			elapsed - float(monster.get("attack_started_at", -10.0))
+			< MONSTER_ATTACK_ANIMATION_SECONDS
+		)
+		world_25d.sync(rooms, monster, thief, afterimages, dragging, attack_active, elapsed)
+		world_25d.reset_physics_interpolation()
+	var hud_node = get("hud")
+	if is_instance_valid(hud_node) and hud_node.has_method("queue_redraw"):
+		hud_node.queue_redraw()
+	gm_output = (
+		"已将玩家%s（%s）传送到玩家%s（%s）的位置：房间 %d-%d。"
+		% [
+			moved_player,
+			_role_name(moved_role),
+			destination_player,
+			_role_name(destination_role),
+			(destination_actor["room"] as Vector2i).x + 1,
+			(destination_actor["room"] as Vector2i).y + 1,
+		]
+	)
+
+
 func _gm_menu_command(parts: PackedStringArray) -> void:
-	var action := "toggle" if parts.size() < 2 else str(parts[1]).to_lower()
+	var action := "on" if parts.size() < 2 else str(parts[1]).to_lower()
 	if action not in ["toggle", "on", "open", "off", "close"]:
 		gm_output = "用法：menu｜menu on｜menu off"
 		return
@@ -189,6 +299,35 @@ func _gm_menu_command(parts: PackedStringArray) -> void:
 		main_menu_selected = 0
 		main_menu_rects.clear()
 		gm_output = "已关闭主界面。"
+
+
+func _gm_pause_command(parts: PackedStringArray) -> void:
+	var action := "on" if parts.size() < 2 else str(parts[1]).to_lower()
+	if action not in ["toggle", "on", "open", "off", "close"]:
+		gm_output = "用法：pause｜pause on｜pause off"
+		return
+	var pause_open := bool(get("game_pause_open"))
+	var should_open := not pause_open if action == "toggle" else action in ["on", "open"]
+	if should_open:
+		if bool(main_menu_open):
+			gm_output = "当前已在主菜单，无需打开游戏内退出菜单。"
+			return
+		var tutorial = get("tutorial_system")
+		if tutorial != null and bool(tutorial.get("active")):
+			gm_output = "当前处于教程，请使用教程内的退出按钮。"
+			return
+		if has_method("_open_game_pause"):
+			call("_open_game_pause")
+		else:
+			set("game_pause_open", true)
+		gm_console_open = false
+		gm_output = "已打开游戏内退出菜单。"
+	else:
+		if has_method("_close_game_pause"):
+			call("_close_game_pause")
+		else:
+			set("game_pause_open", false)
+		gm_output = "已关闭游戏内退出菜单。"
 
 
 func _gm_tutorial_command(parts: PackedStringArray) -> void:
@@ -280,12 +419,12 @@ func _gm_give_tool(player: String, tool_type: String) -> void:
 			return
 		inventory.append(tool)
 		tool_selected[role] = inventory.size() - 1
-		gm_output = "已将%s放入玩家%s当前道具栏。" % [TOOL_DEFS[tool_type]["label"], player]
+		gm_output = "Added %s to player %s's current inventory." % [tool_type, player]
 		return
 	(player_stashes[player] as Array).append(tool)
 	if (player_loadouts[player] as Array).size() < TOOL_INVENTORY_CAPACITY:
 		(player_loadouts[player] as Array).append(id)
-	gm_output = "已将%s放入玩家%s仓库。" % [TOOL_DEFS[tool_type]["label"], player]
+	gm_output = "Added %s to player %s's stash." % [tool_type, player]
 
 
 func _gm_add_command(parts: PackedStringArray) -> void:
@@ -317,29 +456,8 @@ func _gm_add_command(parts: PackedStringArray) -> void:
 
 func _resolve_gm_tool_type(requested_type: String) -> String:
 	var normalized := requested_type.strip_edges().to_lower()
-	if TOOL_DEFS.has(normalized):
+	if SHOP_TOOL_TYPES.has(normalized):
 		return normalized
-	var aliases := {
-		"机器人": "robot",
-		"发条巡夜偶": "robot",
-		"藏品探测器": "detector",
-		"警报器": "alarm",
-		"捕兽夹": "trap",
-		"肾上腺素": "adrenaline",
-		"替身玩偶": "decoy",
-		"留声机": "phonograph",
-		"传送器": "teleporter",
-		"弹簧拳套": "spring_glove",
-	}
-	if aliases.has(normalized):
-		return str(aliases[normalized])
-	for tool_type in TOOL_DEFS:
-		var definition: Dictionary = TOOL_DEFS[tool_type]
-		if normalized in [
-			str(definition.get("label", "")).to_lower(),
-			str(definition.get("short", "")).to_lower(),
-		]:
-			return str(tool_type)
 	return ""
 
 
@@ -360,8 +478,8 @@ func _gm_add_equipped_tool(player: String, tool_type: String) -> void:
 		tool_selected[role] = inventory.size() - 1
 		_refresh_gm_active_loadout(player, inventory, id)
 		gm_output = (
-			"已将%s直接装备给玩家%s（当前%s）。"
-			% [TOOL_DEFS[tool_type]["label"], player, _role_name(role)]
+			"Equipped %s for player %s (current role: %s)."
+			% [tool_type, player, role]
 		)
 		return
 	var loadout: Array = player_loadouts[player]
@@ -374,7 +492,7 @@ func _gm_add_equipped_tool(player: String, tool_type: String) -> void:
 	(player_stashes[player] as Array).append(tool)
 	loadout.append(id)
 	loadout_selected[player] = loadout.size() - 1
-	gm_output = "已将%s直接放入玩家%s装备栏。" % [TOOL_DEFS[tool_type]["label"], player]
+	gm_output = "Added %s directly to player %s's loadout." % [tool_type, player]
 
 
 func _refresh_gm_active_loadout(player: String, inventory: Array, added_id: String) -> void:
@@ -494,7 +612,30 @@ func _monster_treasure_value() -> int:
 	var total := 0
 	for treasure in TREASURES:
 		total += int(treasure["value"])
-	return total
+	return maxi(total - stolen_monster_value, 0)
+
+
+func _prospective_round_values() -> Dictionary:
+	var values := {"A": 0, "B": 0}
+	values[_player_for_role("monster")] = _monster_treasure_value()
+	values[_player_for_role("thief")] = loot_value
+	return values
+
+
+func _projected_player_coins() -> Dictionary:
+	var values := _prospective_round_values()
+	return {
+		"A": int(player_coins["A"]) + int(values["A"]) * COINS_PER_LOOT_VALUE,
+		"B": int(player_coins["B"]) + int(values["B"]) * COINS_PER_LOOT_VALUE,
+	}
+
+
+func _is_monster_treasure(item: Dictionary) -> bool:
+	var item_id := str(item.get("id", ""))
+	for treasure in TREASURES:
+		if str(treasure["id"]) == item_id:
+			return true
+	return false
 
 
 func _end_round(reason: String, thief_escaped: bool, monster_victory := false) -> void:
@@ -514,6 +655,11 @@ func _end_round(reason: String, thief_escaped: bool, monster_victory := false) -
 		match_totals[player] = int(match_totals[player]) + int(round_awards[player])
 	_return_round_tools_to_stashes()
 	phase = "ended"
+	if current_round >= MATCH_ROUNDS:
+		gm_console_open = false
+		gm_command = ""
+		match_end_selected = 0
+		match_end_rects.clear()
 	outcome = (
 		"%s\n玩家%s（怪物）获得 %d 金币；玩家%s（盗贼）获得 %d 金币。"
 		% [reason, monster_player, monster_coins, thief_player, thief_coins]

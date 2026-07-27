@@ -9,9 +9,17 @@ func _make_actor(room: Vector2i, pos: Vector2, dir: String) -> Dictionary:
 		"dir": dir,
 		"facing": _direction_vector(dir),
 		"impact_visual_offset": Vector2.ZERO,
+		"hit_reaction_started_at": -10.0,
+		"hit_reaction_direction": Vector2.ZERO,
+		"attack_started_at": -10.0,
+		"trapped": false,
+		"trapped_started_at": -10.0,
+		"trap_prompt": "",
+		"last_voice_at": -10.0,
 		"hp": 2,
 		"moving": false,
 		"hidden_from_monster": false,
+		"gm_force_visible": false,
 		"last_moved_at": 0.0,
 		"revealed_until": 0.0,
 	}
@@ -72,7 +80,7 @@ func _generate_rooms() -> Array:
 			if not neighbor["doors"].has(edge["opposite"]):
 				neighbor["doors"].append(edge["opposite"])
 
-	var kinds := ["衣柜", "书柜", "木桶", "木箱", "花瓶"]
+	var kinds := ["床", "衣柜", "书柜", "木桶", "木箱", "花瓶"]
 	var floor_textures := WORLD_25D_SCRIPT.FLOOR_TEXTURES
 	for room in generated:
 		room["floor_texture"] = floor_textures[rng.randi_range(0, floor_textures.size() - 1)]

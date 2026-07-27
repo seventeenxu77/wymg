@@ -14,6 +14,12 @@ const ITEM_SHAKE_CYCLE := 2.35
 const ITEM_SHAKE_BURST := 0.78
 const ITEM_SHAKE_FREQUENCY := 31.0
 const ITEM_SHAKE_DISTANCE := 0.11
+const DETECTOR_SHAKE_FREQUENCY := 16.0
+const HIT_REACTION_SECONDS := 0.62
+const HIT_REACTION_ANGLE := 0.62
+const HIT_REACTION_DISTANCE := 0.34
+const ATTACK_ANIMATION_SECONDS := 0.55
+const FURNITURE_HIT_SHAKE_SECONDS := 0.52
 const INVALID_ROOM := Vector2i(-999, -999)
 
 const LAYER_MONSTER_WORLD := 1
@@ -817,6 +823,20 @@ func _create_actor(role: String, layer: int) -> Node3D:
 	sprite.set_meta("foot_offset_x", sprite.position.x)
 	sprite.layers = layer
 	sway_pivot.add_child(sprite)
+	var trap_prompt := Label3D.new()
+	trap_prompt.name = "TrapPrompt"
+	trap_prompt.text = ""
+	trap_prompt.font_size = 54
+	trap_prompt.pixel_size = 0.006
+	trap_prompt.position = Vector3(0.0, 0.10, 0.30)
+	trap_prompt.modulate = Color("#ff3b2f")
+	trap_prompt.outline_modulate = Color("#210504")
+	trap_prompt.outline_size = 9
+	trap_prompt.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	trap_prompt.no_depth_test = true
+	trap_prompt.visible = false
+	trap_prompt.layers = layer
+	actor.add_child(trap_prompt)
 	return actor
 
 
@@ -920,6 +940,7 @@ func _create_furniture_node(room: Vector2i, furniture: Dictionary) -> void:
 
 func _furniture_info(kind: String) -> Dictionary:
 	match kind:
+		"床": return {"size": Vector3(1.74, 0.35, 0.87), "path": "res://GJGamejam素材/2.5D物品/ff_bed_clean.png", "pixel_size": 0.03868, "sel_radius": 0.92, "shadow_radius": 0.78, "sprite_y": 0.92}
 		"衣柜": return {"size": Vector3(0.87, 0.425, 0.87), "path": "res://GJGamejam素材/2.5D物品/ff_wardrobe_clean.png", "pixel_size": 0.03868, "sel_radius": 0.78, "shadow_radius": 0.60, "sprite_y": 1.21}
 		"书柜": return {"size": Vector3(1.0, 0.375, 0.87), "path": "res://GJGamejam素材/2.5D物品/ff_bookshelf_clean.png", "pixel_size": 0.03868, "sel_radius": 0.78, "shadow_radius": 0.62, "sprite_y": 1.21}
 		"木桶": return {"size": Vector3(0.5, 0.45, 0.5), "path": "res://GJGamejam素材/2.5D物品/lp_barrel_clean.png", "pixel_size": 0.01112, "sel_radius": 0.42, "shadow_radius": 0.35}
@@ -968,11 +989,29 @@ func _item_visual_info(item: Dictionary) -> Dictionary:
 	if kind == "pill":
 		return {"path": "res://assets/25d/pill.svg", "pixel_size": 0.0048}
 	if kind == "treasure":
-		if int(item.get("value", 0)) <= 1:
+		if _is_wild_treasure(item):
 			return {"path": "res://GJGamejam素材/2.5D物品/copper_coin.png", "pixel_size": 0.0075}
-		return {"path": "res://GJGamejam素材/2.5D物品/红宝石.png", "pixel_size": 0.01006}
+		match str(item.get("id", "")):
+			"treasure-2":
+				return {"path": "res://assets/25d/items/silver_candlestick.png", "pixel_size": 0.0073, "height": 0.52}
+			"treasure-3":
+				return {"path": "res://assets/25d/items/emerald_brooch.png", "pixel_size": 0.0064, "height": 0.42}
+			"treasure-5":
+				return {"path": "res://assets/25d/items/monster_heart.png", "pixel_size": 0.0065, "height": 0.48}
+			_:
+				return {"path": "res://GJGamejam素材/2.5D物品/红宝石.png", "pixel_size": 0.01006}
 	if kind == "trinket":
-		return {"path": "res://GJGamejam素材/2.5D物品/红宝石.png", "pixel_size": 0.0084}
+		match str(item.get("label", "")):
+			"旧怀表":
+				return {"path": "res://assets/25d/items/old_pocket_watch.png", "pixel_size": 0.0052, "height": 0.28}
+			"银汤匙":
+				return {"path": "res://assets/25d/items/silver_spoon.png", "pixel_size": 0.0048, "height": 0.26}
+			"铜制烟盒":
+				return {"path": "res://assets/25d/items/copper_cigarette_case.png", "pixel_size": 0.0052, "height": 0.25}
+			"珍珠纽扣":
+				return {"path": "res://assets/25d/items/pearl_button.png", "pixel_size": 0.0048, "height": 0.24}
+			_:
+				return {"path": "res://GJGamejam素材/2.5D物品/copper_coin.png", "pixel_size": 0.0075}
 	var tool_type := str(item.get("tool_type", item.get("device_type", "")))
 	match tool_type:
 		"trap":
@@ -990,7 +1029,7 @@ func _item_visual_info(item: Dictionary) -> Dictionary:
 		"phonograph":
 			return {"path": "res://GJGamejam素材/2.5D物品/s2_gramo_clean.png", "pixel_size": 0.0105}
 		"teleporter":
-			return {"path": "res://GJGamejam素材/2.5D物品/红宝石.png", "pixel_size": 0.01006, "color": Color("#6ed5ff")}
+			return {"path": "res://assets/25d/items/teleporter.png", "pixel_size": 0.0068, "height": 0.50}
 		"adrenaline":
 			return {"path": "res://GJGamejam素材/2.5D物品/s2_adren_clean.png", "pixel_size": 0.0062}
 		"spring_glove":
@@ -998,25 +1037,47 @@ func _item_visual_info(item: Dictionary) -> Dictionary:
 		"detector":
 			return {"path": "res://GJGamejam素材/2.5D物品/gm2_detector_clean.png", "pixel_size": 0.0062}
 		"robot":
-			return {"path": "res://GJGamejam素材/2.5D物品/玩偶.png", "pixel_size": 0.0062, "height": 0.54}
+			return {"path": "res://assets/25d/items/robot.png", "pixel_size": 0.0065, "height": 0.52}
 		_:
 			return {"path": "res://GJGamejam素材/2.5D物品/玩偶.png", "pixel_size": 0.0062}
 
 
+func _is_wild_treasure(item: Dictionary) -> bool:
+	var item_id := str(item.get("id", ""))
+	var label := str(item.get("label", ""))
+	return (
+		item_id == "treasure-1"
+		or item_id.begins_with("wild-treasure-")
+		or label in ["古铜币", "古钱币"]
+	)
+
+
 func _create_attack_cone() -> MeshInstance3D:
 	var cone := MeshInstance3D.new()
-	cone.name = "AttackCone"
+	cone.name = "AttackSweep"
 	var mesh := ArrayMesh.new()
 	var arrays: Array = []
 	arrays.resize(Mesh.ARRAY_MAX)
-	arrays[Mesh.ARRAY_VERTEX] = PackedVector3Array([
-		Vector3(0, 0, 0),
-		Vector3(-2.35, 0, -2.35),
-		Vector3(2.35, 0, -2.35),
-	])
+	var vertices := PackedVector3Array()
+	var inner_radius := 0.95
+	var outer_radius := 2.45
+	var segments := 10
+	var half_width := deg_to_rad(15.0)
+	for index in range(segments):
+		var angle_a := lerpf(-half_width, half_width, float(index) / float(segments))
+		var angle_b := lerpf(-half_width, half_width, float(index + 1) / float(segments))
+		var inner_a := Vector3(sin(angle_a) * inner_radius, 0.0, -cos(angle_a) * inner_radius)
+		var outer_a := Vector3(sin(angle_a) * outer_radius, 0.0, -cos(angle_a) * outer_radius)
+		var inner_b := Vector3(sin(angle_b) * inner_radius, 0.0, -cos(angle_b) * inner_radius)
+		var outer_b := Vector3(sin(angle_b) * outer_radius, 0.0, -cos(angle_b) * outer_radius)
+		vertices.append_array(PackedVector3Array([
+			inner_a, outer_a, outer_b,
+			inner_a, outer_b, inner_b,
+		]))
+	arrays[Mesh.ARRAY_VERTEX] = vertices
 	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
 	cone.mesh = mesh
-	cone.material_override = _material(Color(0.95, 0.19, 0.09, 0.3), 1.0, true, true)
+	cone.material_override = _material(Color(1.0, 0.28, 0.12, 0.78), 1.0, true, true)
 	cone.layers = LAYER_MONSTER_EFFECT
 	cone.visible = false
 	world_root.add_child(cone)
@@ -1073,17 +1134,30 @@ func sync(rooms: Array, monster: Dictionary, thief: Dictionary, afterimages: Arr
 			if furn_outline:
 				furn_outline.modulate = Color.BLACK  # Outline stays black
 			var content_value := _furniture_content_value(furniture)
-			var shake_degrees := 0.0
+			var detector_shake_degrees := 0.0
 			if (
 				not bool(furniture.get("destroyed", false))
 				and bool(furniture.get("detector_active", false))
 				and content_value > 0
 			):
-				shake_degrees = minf(1.2 + float(content_value) * 1.25, 11.0)
-			if time - float(furniture.get("last_hit_time", -10.0)) < 0.48:
-				shake_degrees = maxf(shake_degrees, 13.0)
+				detector_shake_degrees = _detector_shake_degrees(content_value)
+				furniture_node.position += _detector_shake_offset(furniture_id, time, content_value)
 			var phase := float(abs(str(furniture_id).hash()) % 628) / 100.0
-			furniture_node.rotation.y = -deg_to_rad(float(furniture["rotation"])) + deg_to_rad(sin(time * 5.2 + phase) * shake_degrees)
+			var rotation_shake := sin(time * 5.2 + phase) * detector_shake_degrees
+			var hit_age := time - float(furniture.get("last_hit_time", -10.0))
+			if hit_age >= 0.0 and hit_age < FURNITURE_HIT_SHAKE_SECONDS:
+				var hit_fade := 1.0 - hit_age / FURNITURE_HIT_SHAKE_SECONDS
+				var hit_wave := sin(hit_age * 58.0 + phase)
+				rotation_shake += hit_wave * 18.0 * hit_fade
+				furniture_node.position += Vector3(
+					hit_wave * 0.14 * hit_fade,
+					absf(sin(hit_age * 34.0)) * 0.055 * hit_fade,
+					cos(hit_age * 47.0 + phase) * 0.07 * hit_fade,
+				)
+			furniture_node.rotation.y = (
+				-deg_to_rad(float(furniture["rotation"]))
+				+ deg_to_rad(rotation_shake)
+			)
 			furniture_node.scale = Vector3(1.0, 0.5, 1.0) if bool(furniture.get("destroyed", false)) else Vector3.ONE
 			var furniture_collision: CollisionShape3D = furniture_node.get_node_or_null("CollisionBody/CollisionShape3D")
 			if furniture_collision:
@@ -1108,7 +1182,7 @@ func sync(rooms: Array, monster: Dictionary, thief: Dictionary, afterimages: Arr
 				_create_item_node(coord, item)
 			var item_node: Node3D = item_nodes[item_id]
 			if (
-				str(item.get("device_type", "")) == "robot"
+				str(item.get("device_type", "")) in ["robot", "decoy"]
 				and str(item_room_keys.get(item_id, "")) != _room_key(coord)
 			):
 				_reassign_item_room_visual(item_id, item_node, coord)
@@ -1134,20 +1208,35 @@ func sync(rooms: Array, monster: Dictionary, thief: Dictionary, afterimages: Arr
 				and item_kind == "device"
 				and str(item.get("device_type", "")) == "trap"
 			):
+				var trap_state := str(item.get("state", ""))
 				var trap_path := (
 					"res://GJGamejam素材/2.5D物品/r3_trapclosed_clean.png"
-					if str(item.get("state", "")) == "active"
+					if trap_state == "active"
 					else "res://GJGamejam素材/2.5D物品/r3_trapopen_clean.png"
 				)
 				var trap_texture: Texture2D = load(trap_path)
 				if item_sprite.texture != trap_texture:
 					item_sprite.texture = trap_texture
+				if trap_state == "sprung":
+					var sprung_age := maxf(time - float(item.get("sprung_at", time)), 0.0)
+					var snap := maxf(1.0 - sprung_age / 0.34, 0.0)
+					var trap_pulse := 0.5 + 0.5 * sin(time * 24.0)
+					item_node.position.y += absf(sin(sprung_age * 28.0)) * 0.18 * snap
+					item_node.scale = Vector3(
+						1.0 + snap * 0.24,
+						0.72 + snap * 0.28,
+						1.0 + snap * 0.24,
+					)
+					item_sprite.modulate = Color(1.0, 0.22 + trap_pulse * 0.34, 0.18 + trap_pulse * 0.18)
+				else:
+					item_node.scale = Vector3.ONE
+					item_sprite.modulate = Color.WHITE
 			if item_sprite and str(item.get("device_type", "")) == "robot":
 				var robot_stunned := time < float(item.get("stunned_until", 0.0))
 				item_sprite.modulate = Color("#777b73") if robot_stunned else Color.WHITE
 		_sync_room_marks(room)
 	_sync_afterimages(afterimages, monster["room"], thief["room"])
-	_sync_attack(monster, attack_active)
+	_sync_attack(monster, attack_active, time)
 	_sync_room_layers(monster["room"], thief["room"], time)
 	_sync_full_walls(monster["room"], camera_yaw_degrees["monster"], "monster")
 	_sync_full_walls(thief["room"], camera_yaw_degrees["thief"], "thief")
@@ -1168,13 +1257,32 @@ func _pickup_item_shake_offset(item_id: String, time: float) -> Vector3:
 
 
 func _furniture_content_value(furniture: Dictionary) -> int:
+	var total := 0
 	for content in furniture.get("contents", []):
 		var kind := str(content.get("kind", ""))
-		if kind == "treasure":
-			return int(content.get("value", 0))
-		if kind == "alarm":
-			return int(content.get("signal_value", 3))
-	return 0
+		if kind in ["treasure", "trinket"]:
+			total += int(content.get("value", 0))
+	return total
+
+
+func _detector_shake_degrees(content_value: int) -> float:
+	return clampf(1.2 + float(content_value) * 1.25, 0.0, 11.0)
+
+
+func _detector_shake_distance(content_value: int) -> float:
+	return clampf(0.012 + float(content_value) * 0.012, 0.0, 0.15)
+
+
+func _detector_shake_offset(furniture_id: String, time: float, content_value: int) -> Vector3:
+	if content_value <= 0:
+		return Vector3.ZERO
+	var phase := float(abs(furniture_id.hash()) % 628) / 100.0
+	var distance := _detector_shake_distance(content_value)
+	return Vector3(
+		sin(time * DETECTOR_SHAKE_FREQUENCY + phase) * distance,
+		0.0,
+		cos(time * DETECTOR_SHAKE_FREQUENCY * 0.83 + phase) * distance * 0.42,
+	)
 
 
 func _sync_actor(node: Node3D, actor: Dictionary, time: float, is_thief: bool) -> void:
@@ -1195,11 +1303,70 @@ func _sync_actor(node: Node3D, actor: Dictionary, time: float, is_thief: bool) -
 	var brightness := _light_brightness_at(_room_key(actor["room"]), node.position)
 	var hidden_alpha := 0.48 if is_thief and bool(actor.get("hidden_from_monster", false)) else 1.0
 	sprite.modulate = Color(brightness, brightness, brightness, hidden_alpha)
+	var trapped := bool(actor.get("trapped", false))
+	var trap_prompt: Label3D = node.get_node_or_null("TrapPrompt")
+	if trap_prompt:
+		trap_prompt.visible = trapped
+		if trapped:
+			trap_prompt.text = str(actor.get("trap_prompt", ""))
+			var prompt_pulse := 0.5 + 0.5 * sin(time * 13.0)
+			trap_prompt.modulate = Color(1.0, 0.08, 0.04, lerpf(0.16, 1.0, prompt_pulse))
 	var phase_offset := 1.6 if is_thief else 0.0
 	var moving: bool = actor.get("moving", false)
+	var hit_age := time - float(actor.get("hit_reaction_started_at", -10.0))
+	var attack_age := time - float(actor.get("attack_started_at", -10.0))
+	pivot.scale = Vector3.ONE
 	if bool(actor.get("downed", false)):
 		pivot.position = Vector3.ZERO
 		pivot.rotation.z = PI * 0.5
+	elif trapped:
+		var trapped_age := maxf(time - float(actor.get("trapped_started_at", time)), 0.0)
+		var shake_x := sin(trapped_age * 52.0) * 0.15 + sin(trapped_age * 83.0) * 0.055
+		var shake_z := cos(trapped_age * 46.0) * 0.08
+		pivot.position = Vector3(shake_x, absf(sin(trapped_age * 31.0)) * 0.11, shake_z)
+		pivot.rotation.z = sin(trapped_age * 41.0) * 0.25
+		var red_pulse := 0.5 + 0.5 * sin(time * 17.0)
+		sprite.modulate = Color(
+			maxf(brightness, 0.78),
+			brightness * lerpf(0.12, 0.42, red_pulse),
+			brightness * lerpf(0.10, 0.30, red_pulse),
+			hidden_alpha,
+		)
+	elif is_thief and hit_age >= 0.0 and hit_age < HIT_REACTION_SECONDS:
+		var hit_t := clampf(hit_age / HIT_REACTION_SECONDS, 0.0, 1.0)
+		var kick := sin(hit_t * PI) * (1.0 - hit_t * 0.24)
+		var hit_direction: Vector2 = actor.get("hit_reaction_direction", Vector2.RIGHT)
+		var sway_sign := signf(hit_direction.x)
+		if is_zero_approx(sway_sign):
+			sway_sign = -signf(hit_direction.y)
+		if is_zero_approx(sway_sign):
+			sway_sign = 1.0
+		pivot.position = Vector3(
+			hit_direction.x * HIT_REACTION_DISTANCE * kick,
+			absf(sin(hit_t * TAU)) * 0.08,
+			hit_direction.y * HIT_REACTION_DISTANCE * kick,
+		)
+		pivot.rotation.z = sway_sign * HIT_REACTION_ANGLE * kick
+	elif not is_thief and attack_age >= 0.0 and attack_age < ATTACK_ANIMATION_SECONDS:
+		var attack_t := clampf(attack_age / ATTACK_ANIMATION_SECONDS, 0.0, 1.0)
+		var sweep_t := smoothstep(0.0, 1.0, attack_t)
+		var attack_facing: Vector2 = actor.get("facing", Vector2.RIGHT)
+		var sweep_sign := signf(attack_facing.x)
+		if is_zero_approx(sweep_sign):
+			sweep_sign = -signf(attack_facing.y)
+		if is_zero_approx(sweep_sign):
+			sweep_sign = 1.0
+		pivot.position = Vector3(
+			attack_facing.x * sin(attack_t * PI) * 0.18,
+			sin(attack_t * PI) * 0.07,
+			attack_facing.y * sin(attack_t * PI) * 0.18,
+		)
+		pivot.rotation.z = sweep_sign * lerpf(-0.30, 0.42, sweep_t)
+		pivot.scale = Vector3(
+			1.0 + sin(attack_t * PI) * 0.08,
+			1.0 - sin(attack_t * PI) * 0.04,
+			1.0,
+		)
 	elif moving:
 		# Keep the foot planted at the actor origin. A small upward-only step
 		# gives motion without driving the cutout below the floor or away from
@@ -1246,18 +1413,29 @@ func camera_relative_vector(role: String, screen_input: Vector2) -> Vector2:
 	return screen_input.normalized().rotated(angle)
 
 
-func _sync_attack(monster: Dictionary, active: bool) -> void:
+func _sync_attack(monster: Dictionary, active: bool, time: float) -> void:
 	if not attack_cone or not is_instance_valid(attack_cone):
 		return
 	attack_cone.visible = active
 	if not active:
 		return
-	attack_cone.position = world_position(monster["room"], monster["pos"], 0.055)
+	var attack_age := maxf(time - float(monster.get("attack_started_at", time)), 0.0)
+	var attack_t := clampf(attack_age / ATTACK_ANIMATION_SECONDS, 0.0, 1.0)
+	var sweep_t := smoothstep(0.0, 1.0, attack_t)
+	attack_cone.position = world_position(monster["room"], monster["pos"], 0.085)
+	var facing_rotation := 0.0
 	match monster["dir"]:
-		"up": attack_cone.rotation.y = 0.0
-		"right": attack_cone.rotation.y = -PI / 2.0
-		"down": attack_cone.rotation.y = PI
-		"left": attack_cone.rotation.y = PI / 2.0
+		"up": facing_rotation = 0.0
+		"right": facing_rotation = -PI / 2.0
+		"down": facing_rotation = PI
+		"left": facing_rotation = PI / 2.0
+	attack_cone.rotation.y = facing_rotation + deg_to_rad(lerpf(-58.0, 58.0, sweep_t))
+	var sweep_scale := 0.86 + sin(attack_t * PI) * 0.18
+	attack_cone.scale = Vector3(sweep_scale, 1.0, sweep_scale)
+	var material := attack_cone.material_override as StandardMaterial3D
+	if material:
+		var alpha := sin(attack_t * PI) * 0.88
+		material.albedo_color = Color(1.0, 0.25, 0.08, alpha)
 
 
 func _sync_afterimages(images: Array, monster_room: Vector2i, thief_room: Vector2i) -> void:
@@ -1570,3 +1748,27 @@ func project_normalized(role: String, room: Vector2i, pos: Vector2, y := 0.25) -
 		return Vector2(0.5, 0.5)
 	var pixel: Vector2 = camera.unproject_position(world_position(room, pos, y))
 	return pixel / Vector2(viewport.size)
+
+
+func project_logical_direction(
+	role: String,
+	listener_global: Vector2,
+	source_global: Vector2,
+) -> Vector2:
+	var camera := monster_camera if role == "monster" else thief_camera
+	if not initialized or not is_instance_valid(camera):
+		return (source_global - listener_global).normalized()
+	var logical_direction := source_global - listener_global
+	if logical_direction.is_zero_approx():
+		return Vector2.ZERO
+	logical_direction = logical_direction.normalized()
+	var world_direction := Vector3(
+		logical_direction.x,
+		0.0,
+		logical_direction.y,
+	)
+	var camera_basis := camera.global_transform.basis
+	return Vector2(
+		world_direction.dot(camera_basis.x),
+		-world_direction.dot(camera_basis.y),
+	).normalized()

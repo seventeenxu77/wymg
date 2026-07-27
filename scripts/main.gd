@@ -27,6 +27,7 @@ func _ready() -> void:
 	add_child(tutorial_system)
 	tutorial_system.setup(self)
 	tutorial_system.all_players_ready.connect(_on_tutorial_players_ready)
+	tutorial_system.return_to_main_menu_requested.connect(_on_tutorial_return_to_main_menu)
 	tutorial_hud = TUTORIAL_HUD_SCRIPT.new()
 	tutorial_hud.name = "TutorialHud"
 	add_child(tutorial_hud)
@@ -49,6 +50,11 @@ func _initialize_main_menu() -> void:
 func _open_main_menu() -> void:
 	if tutorial_system and tutorial_system.active:
 		tutorial_system.close()
+	tutorial_transition_active = false
+	game_pause_open = false
+	game_pause_rects.clear()
+	match_end_selected = 0
+	match_end_rects.clear()
 	main_menu_open = true
 	main_menu_panel = "root"
 	main_menu_selected = 0
@@ -59,6 +65,11 @@ func _open_main_menu() -> void:
 
 
 func new_game() -> void:
+	game_pause_open = false
+	game_pause_selected = 0
+	game_pause_rects.clear()
+	match_end_selected = 0
+	match_end_rects.clear()
 	current_round = 1
 	player_coins = {"A": 0, "B": 0}
 	player_stashes = {"A": [], "B": []}
@@ -88,6 +99,7 @@ func _start_round() -> void:
 	active_storage_id = ""
 	selected_treasure = 0
 	loot_value = 0
+	stolen_monster_value = 0
 	extracted_value = 0
 	has_extracted = false
 	pills = 0
@@ -150,6 +162,10 @@ func _physics_process(delta: float) -> void:
 		return
 	if tutorial_system and tutorial_system.active:
 		return
+	if bool(tutorial_transition_active):
+		return
+	if bool(game_pause_open):
+		return
 	elapsed += delta
 	_update_phase(delta)
 	_update_temporary_events()
@@ -170,7 +186,11 @@ func _physics_process(delta: float) -> void:
 	_update_thief_stealth()
 	_update_walk_audio()
 	if world_25d:
-		world_25d.sync(rooms, monster, thief, afterimages, dragging, elapsed < attack_until, elapsed)
+		var attack_active := (
+			elapsed - float(monster.get("attack_started_at", -10.0))
+			< MONSTER_ATTACK_ANIMATION_SECONDS
+		)
+		world_25d.sync(rooms, monster, thief, afterimages, dragging, attack_active, elapsed)
 
 
 func _update_thief_stealth() -> void:
@@ -178,6 +198,20 @@ func _update_thief_stealth() -> void:
 		return
 	if phase != "hunt" or has_extracted:
 		thief["hidden_from_monster"] = false
+		return
+	var thief_effects: Dictionary = status_effects.get("thief", {})
+	if (
+		str(trapped_by.get("thief", "")) != ""
+		or elapsed < float(thief_effects.get("stunned_until", 0.0))
+	):
+		thief["hidden_from_monster"] = false
+		return
+	if bool(thief.get("gm_force_visible", false)):
+		thief["hidden_from_monster"] = false
+		# A GM teleport keeps both actors visible for inspection. As soon as the
+		# thief moves again, hand visibility back to the normal stealth rule.
+		if bool(thief.get("moving", false)):
+			thief["gm_force_visible"] = false
 		return
 	if bool(thief.get("moving", false)):
 		thief["last_moved_at"] = elapsed
@@ -243,6 +277,9 @@ func _apply_view_relative_input(role: String, screen_input: Vector2, delta: floa
 func _input(event: InputEvent) -> void:
 	if Engine.is_editor_hint():
 		return
+	if bool(tutorial_transition_active):
+		get_viewport().set_input_as_handled()
+		return
 	if event is InputEventKey and event.pressed and not event.echo and _is_gm_console_toggle(event):
 		gm_console_open = not bool(gm_console_open)
 		gm_command = ""
@@ -263,6 +300,10 @@ func _input(event: InputEvent) -> void:
 		if tutorial_system.handle_input(event):
 			get_viewport().set_input_as_handled()
 		return
+	if bool(game_pause_open):
+		_handle_game_pause_input(event)
+		get_viewport().set_input_as_handled()
+		return
 	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT and event.pressed:
 		for role in ["monster", "thief"]:
 			if (help_rects[role] as Rect2).has_point(event.position):
@@ -275,6 +316,12 @@ func _input(event: InputEvent) -> void:
 		if result_restart_rect.has_point(event.position):
 			_advance_from_result()
 			return
+		if phase == "ended" and current_round >= MATCH_ROUNDS:
+			for action in match_end_rects:
+				if (match_end_rects[action] as Rect2).has_point(event.position):
+					match_end_selected = 0 if str(action) == "restart" else 1
+					_activate_match_end_action(str(action))
+					return
 		if phase == "hide" and early_rect.has_point(event.position):
 			_begin_hunt_countdown()
 			return
@@ -284,6 +331,25 @@ func _input(event: InputEvent) -> void:
 	var physical: Key = event.physical_keycode
 	if key == KEY_F2:
 		new_game()
+		return
+	if key == KEY_ESCAPE:
+		if bool(help_open["monster"]) or bool(help_open["thief"]):
+			help_open["monster"] = false
+			help_open["thief"] = false
+			return
+		if not _active_storage_furniture().is_empty():
+			_handle_storage_panel_input(key, physical)
+			return
+		_open_game_pause()
+		return
+	if phase == "ended" and current_round >= MATCH_ROUNDS:
+		if (
+			physical in [KEY_W, KEY_A, KEY_S, KEY_D]
+			or key in [KEY_UP, KEY_DOWN, KEY_LEFT, KEY_RIGHT]
+		):
+			match_end_selected = 1 - int(match_end_selected)
+		elif physical == KEY_SPACE or key == KEY_SPACE:
+			_activate_match_end_action("restart" if int(match_end_selected) == 0 else "main_menu")
 		return
 	if phase == "shop":
 		_handle_shop_input(key, physical)
@@ -295,10 +361,6 @@ func _input(event: InputEvent) -> void:
 		return
 	if key == KEY_KP_ADD:
 		help_open[right_role] = not bool(help_open[right_role])
-		return
-	if key == KEY_ESCAPE and (bool(help_open["monster"]) or bool(help_open["thief"])):
-		help_open["monster"] = false
-		help_open["thief"] = false
 		return
 	if _help_blocks_key(key, physical):
 		return
@@ -332,6 +394,8 @@ func _input(event: InputEvent) -> void:
 		_cycle_tool(left_role, 1)
 	elif physical == KEY_F:
 		_use_selected_tool(left_role)
+	elif physical == KEY_B:
+		_voice(left_role)
 	elif physical == KEY_C and left_role == "thief":
 		_use_pill()
 	elif physical == KEY_V and left_role == "thief":
@@ -347,6 +411,8 @@ func _input(event: InputEvent) -> void:
 			_use_pill()
 	elif key == KEY_KP_3:
 		_use_selected_tool(right_role)
+	elif key == KEY_KP_MULTIPLY:
+		_voice(right_role)
 	elif key == KEY_KP_4:
 		_cycle_tool(right_role, -1)
 	elif key == KEY_KP_5:
@@ -362,6 +428,69 @@ func _input(event: InputEvent) -> void:
 	elif key == KEY_KP_9:
 		if world_25d:
 			world_25d.rotate_camera(right_role, 1)
+
+
+func _open_game_pause() -> void:
+	if bool(main_menu_open) or (tutorial_system and tutorial_system.active):
+		return
+	game_pause_open = true
+	game_pause_selected = 0
+	game_pause_rects.clear()
+	for audio_player in walk_players.values():
+		if is_instance_valid(audio_player):
+			(audio_player as AudioStreamPlayer).stop()
+
+
+func _close_game_pause() -> void:
+	game_pause_open = false
+	game_pause_selected = 0
+	game_pause_rects.clear()
+
+
+func _handle_game_pause_input(event: InputEvent) -> void:
+	if event is InputEventMouseMotion:
+		var hovered := _game_pause_action_at(event.position)
+		if hovered != "":
+			game_pause_selected = 0 if hovered == "continue" else 1
+		return
+	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT and event.pressed:
+		var clicked := _game_pause_action_at(event.position)
+		if clicked != "":
+			_activate_game_pause_action(clicked)
+		return
+	if not (event is InputEventKey) or not event.pressed or event.echo:
+		return
+	var key: Key = event.keycode
+	var physical: Key = event.physical_keycode
+	if key == KEY_ESCAPE:
+		_close_game_pause()
+		return
+	if physical in [KEY_W, KEY_A, KEY_S, KEY_D] or key in [KEY_UP, KEY_DOWN, KEY_LEFT, KEY_RIGHT]:
+		game_pause_selected = 1 - int(game_pause_selected)
+		return
+	if physical == KEY_R or key in [KEY_KP_1, KEY_ENTER, KEY_KP_ENTER, KEY_SPACE]:
+		_activate_game_pause_action("continue" if int(game_pause_selected) == 0 else "main_menu")
+
+
+func _game_pause_action_at(position: Vector2) -> String:
+	for action in game_pause_rects:
+		if (game_pause_rects[action] as Rect2).has_point(position):
+			return str(action)
+	return ""
+
+
+func _activate_game_pause_action(action: String) -> void:
+	if action == "continue":
+		_close_game_pause()
+	elif action == "main_menu":
+		_open_main_menu()
+
+
+func _activate_match_end_action(action: String) -> void:
+	if action == "restart":
+		new_game()
+	elif action == "main_menu":
+		_open_main_menu()
 
 
 func _handle_main_menu_input(event: InputEvent) -> void:
@@ -552,13 +681,13 @@ func _help_blocks_key(key: Key, physical: Key) -> bool:
 	var right_role := _role_for_player("B")
 	if bool(help_open[left_role]) and physical in [
 		KEY_W, KEY_A, KEY_S, KEY_D, KEY_Q, KEY_E, KEY_G, KEY_R, KEY_SPACE,
-		KEY_Z, KEY_X, KEY_F, KEY_C, KEY_V, KEY_H,
+		KEY_Z, KEY_X, KEY_F, KEY_B, KEY_C, KEY_V, KEY_H,
 	]:
 		return true
 	if bool(help_open[right_role]) and key in [
 		KEY_UP, KEY_DOWN, KEY_LEFT, KEY_RIGHT,
 		KEY_KP_0, KEY_KP_1, KEY_KP_2, KEY_KP_3, KEY_KP_4, KEY_KP_5,
-		KEY_KP_6, KEY_KP_7, KEY_KP_9,
+		KEY_KP_6, KEY_KP_7, KEY_KP_9, KEY_KP_MULTIPLY,
 	]:
 		return true
 	return false
@@ -573,12 +702,12 @@ func _handle_storage_panel_input(key: Key, physical: Key) -> bool:
 		return true
 	var monster_player := _player_for_role("monster")
 	var previous_pressed := (
-		physical == KEY_W if monster_player == "A"
-		else key == KEY_UP
+		physical == KEY_A if monster_player == "A"
+		else key == KEY_LEFT
 	)
 	var next_pressed := (
-		physical == KEY_S if monster_player == "A"
-		else key == KEY_DOWN
+		physical == KEY_D if monster_player == "A"
+		else key == KEY_RIGHT
 	)
 	var transfer_pressed := (
 		physical == KEY_R if monster_player == "A"
@@ -613,7 +742,31 @@ func _close_tutorial_mode(start_fresh_game := true) -> void:
 
 
 func _on_tutorial_players_ready() -> void:
-	call_deferred("_close_tutorial_mode", true)
+	if bool(tutorial_transition_active):
+		return
+	tutorial_transition_active = true
+	if hud:
+		hud.queue_redraw()
+	call_deferred("_cleanup_tutorial_then_start_game")
+
+
+func _cleanup_tutorial_then_start_game() -> void:
+	if tutorial_system:
+		tutorial_system.close()
+	# Tutorial renderers and their four SubViewports are queued for deletion.
+	# Give RenderingServer two frames to release them before rebuilding the
+	# complete 6x6 match world; doing both in one frame can stall the GPU.
+	await get_tree().process_frame
+	await get_tree().process_frame
+	main_menu_open = false
+	new_game()
+	tutorial_transition_active = false
+	if hud:
+		hud.queue_redraw()
+
+
+func _on_tutorial_return_to_main_menu() -> void:
+	call_deferred("_open_main_menu")
 
 
 func _calculate_layout(size: Vector2) -> Dictionary:

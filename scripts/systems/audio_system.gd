@@ -14,12 +14,21 @@ func _add_noise(
 	actor_override: Dictionary = {},
 	throttle := 0.0,
 	duration := 2.0,
-	global := false
+	global := false,
+	follow_source := false
 ) -> void:
 	if phase != "hunt":
 		return
 	var actor := actor_override if not actor_override.is_empty() else _get_actor(role)
 	_add_noise_at(role, label, actor["room"], actor["pos"], throttle, duration, global)
+	if follow_source and not noises.is_empty():
+		var latest: Dictionary = noises.back()
+		if (
+			str(latest.get("source", "")) == role
+			and str(latest.get("label", "")) == label
+			and is_equal_approx(float(latest.get("created", -1.0)), elapsed)
+		):
+			latest["follow_role"] = role
 
 
 func _add_noise_at(
@@ -29,7 +38,8 @@ func _add_noise_at(
 	pos: Vector2,
 	throttle := 0.0,
 	duration := 2.0,
-	global := false
+	global := false,
+	follow_device_id := ""
 ) -> void:
 	if phase != "hunt":
 		return
@@ -37,7 +47,7 @@ func _add_noise_at(
 		for existing in noises:
 			if existing["source"] == source and existing["label"] == label and elapsed - float(existing["created"]) < throttle:
 				return
-	noises.append({
+	var entry := {
 		"source": source,
 		"label": label,
 		"room": room,
@@ -46,9 +56,33 @@ func _add_noise_at(
 		"expires": elapsed + duration,
 		"duration": duration,
 		"global": global,
-	})
+	}
+	if follow_device_id != "":
+		entry["follow_device_id"] = follow_device_id
+	noises.append(entry)
 	if global:
 		_play_global_noise(label, duration)
+
+
+func _noise_location(noise: Dictionary) -> Dictionary:
+	var follow_role := str(noise.get("follow_role", ""))
+	if follow_role in ["monster", "thief"]:
+		var actor := _get_actor(follow_role)
+		if not actor.is_empty():
+			return {"room": actor["room"], "pos": actor["pos"]}
+	var follow_device_id := str(noise.get("follow_device_id", ""))
+	if follow_device_id != "" and has_method("_find_device_entry"):
+		var found_value = call("_find_device_entry", follow_device_id)
+		if found_value is Dictionary:
+			var found: Dictionary = found_value
+			if not found.is_empty():
+				var room: Dictionary = found["room"]
+				var item: Dictionary = found["item"]
+				return {"room": room["coord"], "pos": item["pos"]}
+	return {
+		"room": noise.get("room", Vector2i.ZERO),
+		"pos": noise.get("pos", Vector2.ZERO),
+	}
 
 
 func _play_global_noise(label: String, event_duration: float) -> void:
@@ -183,5 +217,5 @@ func _reveal_thief(actor_override: Dictionary = {}) -> void:
 		"room": actor["room"],
 		"pos": actor["pos"],
 		"created": elapsed,
-		"expires": elapsed + 1.1,
+		"expires": elapsed + AFTERIMAGE_LINGER_SECONDS,
 	})
