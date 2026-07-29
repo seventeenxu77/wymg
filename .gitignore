@@ -7,3 +7,14 @@
 *.exe
 /artifacts/
 /tmp/
+
+# Local development and agent configuration
+/.agents/
+/.claude/
+/tests/
+
+# Local planning notes and unreferenced reference images
+/record.md
+/image.png
+/image-1.png
+/image-2.png
