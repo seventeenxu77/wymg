@@ -26,6 +26,7 @@ const HUD_SETTLEMENT_BADGE_TEXTURE: Texture2D = preload("res://assets/ui/hud/hud
 const MAIN_MENU_TITLE_FONT: Font = preload("res://assets/fonts/MaShanZheng-Regular.ttf")
 const COPPER_COIN_TEXTURE: Texture2D = preload("res://GJGamejam素材/2.5D物品/copper_coin.png")
 const MAIN_MENU_BACKGROUND_TEXTURE: Texture2D = preload("res://assets/ui/main_menu/menu_background.png")
+const MINIMAP_RENDERER := preload("res://scripts/presentation/minimap_renderer.gd")
 const MAIN_MENU_ITEM_TEXTURES := {
 	"start": preload("res://assets/ui/main_menu/menu_start_badge.png"),
 	"settings": preload("res://assets/ui/main_menu/menu_settings_badge.png"),
@@ -1982,106 +1983,7 @@ func _rotate_minimap_point(point: Vector2, center: Vector2, angle: float) -> Vec
 
 
 func _draw_minimap(rect: Rect2, role: String) -> void:
-	var angle := _minimap_rotation(role)
-	var center := rect.get_center()
-	var rotated_bounds_scale := absf(cos(angle)) + absf(sin(angle))
-	var grid_side := minf(rect.size.x, rect.size.y) / maxf(rotated_bounds_scale, 1.0)
-	var grid_rect := Rect2(center - Vector2.ONE * grid_side / 2.0, Vector2.ONE * grid_side)
-	var gap := 3.0
-	var cell := (grid_side - gap * (MAP_SIZE - 1)) / MAP_SIZE
-	var actor: Dictionary = _get_actor(role)
-	var accent := MONSTER_COLOR if role == "monster" else THIEF_COLOR
-	for room in rooms:
-		var coord: Vector2i = room["coord"]
-		var owned_robot := _owned_robot_in_room(coord, role)
-		var cell_rect := Rect2(
-			grid_rect.position + Vector2(coord.x, coord.y) * (cell + gap),
-			Vector2(cell, cell)
-		)
-		var has_actor: bool = actor["room"] == coord
-		var fill := accent.darkened(0.2) if has_actor else Color("#252824")
-		if (
-			not owned_robot.is_empty()
-			and elapsed < float(owned_robot.get("alert_until", 0.0))
-		):
-			var pulse := 0.55 + sin(elapsed * 12.0) * 0.2
-			fill = Color("#db4f3f").lerp(Color("#f0b05e"), pulse)
-		var corners := PackedVector2Array([
-			_rotate_minimap_point(cell_rect.position, center, angle),
-			_rotate_minimap_point(Vector2(cell_rect.end.x, cell_rect.position.y), center, angle),
-			_rotate_minimap_point(cell_rect.end, center, angle),
-			_rotate_minimap_point(Vector2(cell_rect.position.x, cell_rect.end.y), center, angle),
-		])
-		draw_colored_polygon(corners, fill)
-		for corner_index in range(corners.size()):
-			draw_line(corners[corner_index], corners[(corner_index + 1) % corners.size()], Color("#4b5048"), 1)
-		var door_length := cell * 0.32
-		for door in room["doors"]:
-			var door_from := Vector2.ZERO
-			var door_to := Vector2.ZERO
-			match door:
-				"up":
-					door_from = Vector2(cell_rect.get_center().x - door_length / 2, cell_rect.position.y)
-					door_to = Vector2(cell_rect.get_center().x + door_length / 2, cell_rect.position.y)
-				"down":
-					door_from = Vector2(cell_rect.get_center().x - door_length / 2, cell_rect.end.y)
-					door_to = Vector2(cell_rect.get_center().x + door_length / 2, cell_rect.end.y)
-				"left":
-					door_from = Vector2(cell_rect.position.x, cell_rect.get_center().y - door_length / 2)
-					door_to = Vector2(cell_rect.position.x, cell_rect.get_center().y + door_length / 2)
-				"right":
-					door_from = Vector2(cell_rect.end.x, cell_rect.get_center().y - door_length / 2)
-					door_to = Vector2(cell_rect.end.x, cell_rect.get_center().y + door_length / 2)
-			draw_line(
-				_rotate_minimap_point(door_from, center, angle),
-				_rotate_minimap_point(door_to, center, angle),
-				TEXT_COLOR,
-				2,
-			)
-		if has_actor:
-			var marker_center := _rotate_minimap_point(cell_rect.get_center(), center, angle)
-			draw_circle(marker_center, maxf(cell * 0.18, 3.5), accent)
-			draw_circle(marker_center, maxf(cell * 0.18, 3.5), Color("#111311"), false, 1.0)
-		if not owned_robot.is_empty():
-			var robot_center := _rotate_minimap_point(
-				cell_rect.get_center() + Vector2(-cell * 0.22, cell * 0.22),
-				center,
-				angle,
-			)
-			var robot_color := (
-				Color("#6d716b")
-				if elapsed < float(owned_robot.get("stunned_until", 0.0))
-				else Color("#8fd0a4")
-			)
-			draw_circle(robot_center, maxf(cell * 0.1, 2.5), robot_color)
-			draw_circle(robot_center, maxf(cell * 0.1, 2.5), Color("#111311"), false, 1.0)
-		if role == "monster":
-			for marker in _monster_treasure_markers(room):
-				var local_pos: Vector2 = marker["pos"]
-				var marker_center := cell_rect.position + local_pos / ROOM_SIZE * cell_rect.size
-				marker_center = _rotate_minimap_point(marker_center, center, angle)
-				var marker_size := clampf(cell * 0.38, 8.0, 14.0)
-				var marker_rect := Rect2(
-					marker_center - Vector2.ONE * marker_size * 0.5,
-					Vector2.ONE * marker_size,
-				)
-				draw_rect(marker_rect.grow(1.5), Color("#111311"))
-				_draw_treasure_icon(str(marker["id"]), marker_rect)
-				draw_rect(marker_rect.grow(1.5), GOLD_COLOR, false, 1.0)
-	for room in rooms:
-		for item in room["items"]:
-			if (
-				bool(item.get("collected", false))
-				or str(item.get("device_type", "")) != "decoy"
-				or str(item.get("owner", "")) == role
-			):
-				continue
-			var decoy_coord: Vector2i = room["coord"]
-			var decoy_center := grid_rect.position + Vector2(decoy_coord.x, decoy_coord.y) * (cell + gap) + Vector2.ONE * cell * 0.5
-			decoy_center = _rotate_minimap_point(decoy_center, center, angle)
-			var decoy_color := THIEF_COLOR if str(item.get("owner", "")) == "thief" else MONSTER_COLOR
-			draw_circle(decoy_center + Vector2(2, -2), maxf(cell * 0.14, 3.0), decoy_color)
-			draw_circle(decoy_center + Vector2(2, -2), maxf(cell * 0.14, 3.0), Color("#111311"), false, 1.0)
+	MINIMAP_RENDERER.draw(self, rect, role)
 
 
 func _monster_treasure_markers(room: Dictionary) -> Array:

@@ -2,6 +2,8 @@
 class_name ActorSystem
 extends "res://scripts/systems/round_system.gd"
 
+const MANSION_COLLISION := preload("res://scripts/state/mansion_collision.gd")
+
 
 # ToolSystem overrides these hooks. Keeping the interface here prevents the
 # actor layer from depending on a concrete tool implementation.
@@ -135,57 +137,19 @@ func _move_actor_axis(role: String, motion: Vector2) -> void:
 
 
 func _actor_collision_radius(role: String) -> float:
-	return MONSTER_COLLISION_RADIUS if role == "monster" else THIEF_COLLISION_RADIUS
+	return MANSION_COLLISION.actor_radius(role)
 
 
 func _position_clears_room_walls(room: Dictionary, pos: Vector2, role := "") -> bool:
-	var doors: Array = room["doors"]
-	var collision_radius := ACTOR_COLLISION_RADIUS if role == "" else _actor_collision_radius(role)
-	var door_center_limit := (
-		WORLD_25D_SCRIPT.DOOR_GAP / (2.0 * WORLD_25D_SCRIPT.CELL_SIZE)
-		- collision_radius
-	)
-	if pos.x < collision_radius:
-		if not doors.has("left") or absf(pos.y - ROOM_SIZE * 0.5) > door_center_limit:
-			return false
-	if pos.x > ROOM_SIZE - collision_radius:
-		if not doors.has("right") or absf(pos.y - ROOM_SIZE * 0.5) > door_center_limit:
-			return false
-	if pos.y < collision_radius:
-		if not doors.has("up") or absf(pos.x - ROOM_SIZE * 0.5) > door_center_limit:
-			return false
-	if pos.y > ROOM_SIZE - collision_radius:
-		if not doors.has("down") or absf(pos.x - ROOM_SIZE * 0.5) > door_center_limit:
-			return false
-	return true
+	return MANSION_COLLISION.position_clears_room_walls(room, pos, role)
 
 
 func _actor_overlaps_furniture(actor_pos: Vector2, furniture: Dictionary, role := "") -> bool:
-	var half_extents := _furniture_half_extents(str(furniture["kind"]))
-	var collision_radius := ACTOR_COLLISION_RADIUS if role == "" else _actor_collision_radius(role)
-	var local_pos := (
-		actor_pos - (furniture["pos"] as Vector2)
-	).rotated(-deg_to_rad(float(furniture["rotation"])))
-	var closest := Vector2(
-		clampf(local_pos.x, -half_extents.x, half_extents.x),
-		clampf(local_pos.y, -half_extents.y, half_extents.y),
-	)
-	return local_pos.distance_squared_to(closest) < collision_radius * collision_radius
+	return MANSION_COLLISION.actor_overlaps_furniture(actor_pos, furniture, role)
 
 
 func _furniture_half_extents(kind: String) -> Vector2:
-	# Ground-plane footprint of the renderer's hidden 3D base meshes, converted
-	# from world metres to the room's continuous coordinate system.
-	var world_size: Vector2
-	match kind:
-		"床": world_size = Vector2(1.74, 0.87)
-		"衣柜": world_size = Vector2(0.87, 0.87)
-		"书柜": world_size = Vector2(1.0, 0.87)
-		"木桶": world_size = Vector2(0.5, 0.5)
-		"木箱": world_size = Vector2(0.6, 0.6)
-		"花瓶": world_size = Vector2(0.28, 0.28)
-		_: world_size = Vector2(0.6, 0.6)
-	return world_size / WORLD_25D_SCRIPT.CELL_SIZE * 0.5
+	return MANSION_COLLISION.furniture_half_extents(kind)
 
 
 func _direction_name(motion: Vector2) -> String:

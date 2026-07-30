@@ -1,9 +1,24 @@
 @echo off
+setlocal
 title DEEP SEEK
-set "GODOT_EXE=C:\Users\SQ\Desktop\Godot_v4.7-stable_win64.exe\Godot_v4.7-stable_win64.exe"
-if not exist "%GODOT_EXE%" (
-  echo Godot 4.7 executable was not found.
-  pause
-  exit /b 1
+
+where godot >nul 2>nul
+if not errorlevel 1 (
+  godot --path "%~dp0"
+  exit /b %errorlevel%
 )
-"%GODOT_EXE%" --path "%~dp0"
+
+where godot4 >nul 2>nul
+if not errorlevel 1 (
+  godot4 --path "%~dp0"
+  exit /b %errorlevel%
+)
+
+if exist "%USERPROFILE%\bin\godot.cmd" (
+  call "%USERPROFILE%\bin\godot.cmd" --path "%~dp0"
+  exit /b %errorlevel%
+)
+
+echo Godot 4.7 command was not found in PATH or "%USERPROFILE%\bin".
+pause
+exit /b 1

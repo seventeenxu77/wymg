@@ -5,6 +5,8 @@ signal all_players_ready
 signal return_to_main_menu_requested
 
 const WORLD_25D_SCRIPT := preload("res://scripts/world_25d.gd")
+const GAMEPLAY_STATE_FACTORY := preload("res://scripts/state/gameplay_state_factory.gd")
+const TUTORIAL_STEP_CATALOG := preload("res://scripts/tutorial/tutorial_step_catalog.gd")
 
 const ROOM_SIZE := 5.0
 const ACTOR_SPEED := 4.0
@@ -21,20 +23,7 @@ const HIT_RECOVER_TIME := 0.18
 const HIT_WINDUP_DISTANCE := 0.18
 const HIT_LUNGE_DISTANCE := 0.32
 
-const OBJECTIVE_ORDER := [
-	"help",
-	"basics",
-	"enter_room_2",
-	"furniture",
-	"enter_room_3",
-	"challenge",
-	"enter_room_4",
-	"shop_hit",
-	"shop",
-	"use_tool",
-	"enter_room_5",
-	"exit_hit",
-]
+const OBJECTIVE_ORDER := TUTORIAL_STEP_CATALOG.OBJECTIVE_ORDER
 
 var game: Node
 var active := false
@@ -102,17 +91,13 @@ func _fresh_lobby_session() -> Dictionary:
 
 
 func _fresh_actor(room: Vector2i, pos: Vector2, direction: String) -> Dictionary:
-	return {
-		"room": room,
-		"pos": pos,
-		"dir": direction,
-		"facing": _direction_vector(direction),
-		"impact_visual_offset": Vector2.ZERO,
-		"hp": 2,
-		"moving": false,
-		"hidden_from_monster": false,
-		"downed": false,
-	}
+	return GAMEPLAY_STATE_FACTORY.actor(
+		room,
+		pos,
+		direction,
+		_direction_vector(direction),
+		true,
+	)
 
 
 func start_run(player: String, role: String) -> void:
@@ -1091,20 +1076,10 @@ func _direction_name(direction: Vector2) -> String:
 
 
 func objective_title(session: Dictionary) -> String:
-	match str(session.get("objective", "")):
-		"help": return "打开帮助菜单"
-		"basics": return "移动与旋转视角"
-		"enter_room_2": return "进入第二个房间"
-		"furniture": return "学习家具与藏品"
-		"enter_room_3": return "进入第三个房间"
-		"challenge": return "潜行练习" if str(session["role"]) == "thief" else "追击练习"
-		"enter_room_4": return "进入第四个房间"
-		"shop_hit": return "打开教学商店"
-		"shop": return "购买并装备肾上腺素"
-		"use_tool": return "使用肾上腺素"
-		"enter_room_5": return "进入第五个房间"
-		"exit_hit": return "离开教学"
-	return "教学"
+	return TUTORIAL_STEP_CATALOG.title(
+		str(session.get("objective", "")),
+		str(session.get("role", "")),
+	)
 
 
 func objective_detail(player: String, session: Dictionary) -> String:

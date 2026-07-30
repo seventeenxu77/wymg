@@ -2,27 +2,16 @@
 class_name RoomSystem
 extends "res://scripts/systems/game_state_base.gd"
 
+const GAMEPLAY_STATE_FACTORY := preload("res://scripts/state/gameplay_state_factory.gd")
+
+
 func _make_actor(room: Vector2i, pos: Vector2, dir: String) -> Dictionary:
-	return {
-		"room": room,
-		"pos": pos,
-		"dir": dir,
-		"facing": _direction_vector(dir),
-		"impact_visual_offset": Vector2.ZERO,
-		"hit_reaction_started_at": -10.0,
-		"hit_reaction_direction": Vector2.ZERO,
-		"attack_started_at": -10.0,
-		"trapped": false,
-		"trapped_started_at": -10.0,
-		"trap_prompt": "",
-		"last_voice_at": -10.0,
-		"hp": 2,
-		"moving": false,
-		"hidden_from_monster": false,
-		"gm_force_visible": false,
-		"last_moved_at": 0.0,
-		"revealed_until": 0.0,
-	}
+	return GAMEPLAY_STATE_FACTORY.actor(
+		room,
+		pos,
+		dir,
+		_direction_vector(dir),
+	)
 
 
 func _room_index(room_pos: Vector2i) -> int:
@@ -260,33 +249,17 @@ func _role_name(role: String) -> String:
 
 
 func _fresh_status_effects() -> Dictionary:
-	return {
-		"adrenaline_until": 0.0,
-		"fatigue_until": 0.0,
-		"stunned_until": 0.0,
-		"teleport_started": -1.0,
-		"teleport_ends": -1.0,
-	}
+	return GAMEPLAY_STATE_FACTORY.status_effects()
 
 
 func _make_tool_instance(tool_type: String, id: String) -> Dictionary:
 	var definition: Dictionary = TOOL_DEFS[tool_type]
-	var result := {
-		"id": id,
-		"kind": "tool",
-		"tool_type": tool_type,
-		"label": definition["label"],
-		"value": 0,
-	}
-	if tool_type == "detector":
-		result["charge"] = DETECTOR_BATTERY_SECONDS
-		result["active"] = false
-		result["next_noise"] = 0.0
-	elif tool_type == "robot":
-		result["deployed"] = false
-		result["robot_id"] = ""
-		result["stunned_until"] = 0.0
-	return result
+	return GAMEPLAY_STATE_FACTORY.tool(
+		tool_type,
+		id,
+		definition,
+		DETECTOR_BATTERY_SECONDS,
+	)
 
 
 func _furniture_has_treasure(furniture: Dictionary) -> bool:

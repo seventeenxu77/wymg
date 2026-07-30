@@ -4,10 +4,13 @@ extends "res://scripts/systems/tool_system.gd"
 const GAME_HUD_SCRIPT := preload("res://scripts/presentation/game_hud.gd")
 const TUTORIAL_SYSTEM_SCRIPT := preload("res://scripts/tutorial/tutorial_system.gd")
 const TUTORIAL_HUD_SCRIPT := preload("res://scripts/tutorial/tutorial_hud.gd")
+const MODE_ROUTER_SCRIPT := preload("res://scripts/modes/mode_router.gd")
+const NETWORK_LAUNCH_OPTIONS := preload("res://scripts/network/network_launch_options.gd")
 
 var hud: Node2D
 var tutorial_system: Node
 var tutorial_hud: Node2D
+var mode_router: GameModeRouter
 
 func _ready() -> void:
 	rng.randomize()
@@ -32,8 +35,14 @@ func _ready() -> void:
 	tutorial_hud.name = "TutorialHud"
 	add_child(tutorial_hud)
 	tutorial_hud.setup(self, tutorial_system)
+	mode_router = MODE_ROUTER_SCRIPT.new()
+	mode_router.name = "GameModeRouter"
+	add_child(mode_router)
+	mode_router.classic_local_requested.connect(_start_classic_local_mode)
+	mode_router.main_menu_requested.connect(_open_main_menu)
 	new_game()
 	_initialize_main_menu()
+	call_deferred("_apply_network_launch_arguments")
 	set_process(true)
 	set_physics_process(true)
 	set_process_input(true)
@@ -50,6 +59,8 @@ func _initialize_main_menu() -> void:
 func _open_main_menu() -> void:
 	if tutorial_system and tutorial_system.active:
 		tutorial_system.close()
+	if mode_router:
+		mode_router.close()
 	tutorial_transition_active = false
 	game_pause_open = false
 	game_pause_rects.clear()
@@ -157,6 +168,8 @@ func _process(_delta: float) -> void:
 
 func _physics_process(delta: float) -> void:
 	if Engine.is_editor_hint():
+		return
+	if mode_router and mode_router.active:
 		return
 	if bool(main_menu_open):
 		return
@@ -279,6 +292,10 @@ func _input(event: InputEvent) -> void:
 		return
 	if bool(tutorial_transition_active):
 		get_viewport().set_input_as_handled()
+		return
+	if mode_router and mode_router.active:
+		if mode_router.handle_input(event):
+			get_viewport().set_input_as_handled()
 		return
 	if event is InputEventKey and event.pressed and not event.echo and _is_gm_console_toggle(event):
 		gm_console_open = not bool(gm_console_open)
@@ -592,7 +609,9 @@ func _activate_main_menu_action(action: String) -> void:
 			main_menu_open = false
 			main_menu_panel = "root"
 			main_menu_rects.clear()
-			new_game()
+			mode_router.open_mode_selection()
+		"start_local":
+			_start_classic_local_mode()
 		"settings":
 			main_menu_panel = "settings"
 			main_menu_selected = 0
@@ -618,6 +637,25 @@ func _activate_main_menu_action(action: String) -> void:
 			main_menu_rects.clear()
 		"exit_confirm":
 			get_tree().quit()
+
+
+func _start_classic_local_mode() -> void:
+	if mode_router:
+		mode_router.close()
+	main_menu_open = false
+	main_menu_panel = "root"
+	main_menu_rects.clear()
+	new_game()
+
+
+func _apply_network_launch_arguments() -> void:
+	var options := NETWORK_LAUNCH_OPTIONS.parse(OS.get_cmdline_user_args())
+	if str(options.get("mode", "")).is_empty():
+		return
+	main_menu_open = false
+	main_menu_panel = "root"
+	main_menu_rects.clear()
+	mode_router.open_online_lobby(options)
 
 
 func _adjust_main_menu_volume(direction: int) -> void:

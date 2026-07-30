@@ -2,7 +2,7 @@ shader_type spatial;
 render_mode unshaded;
 
 uniform sampler2D floor_tex : source_color;
-uniform vec3 light_position = vec3(0.0, 0.0, 0.0);
+instance uniform vec3 light_position = vec3(0.0, 0.0, 0.0);
 uniform float light_max_dist : hint_range(1.0, 20.0) = 4.8;
 uniform float dark_factor : hint_range(0.0, 1.0) = 0.15;
 

@@ -2,10 +2,10 @@ shader_type spatial;
 render_mode unshaded;
 
 uniform sampler2D wall_tex : source_color;
-uniform vec3 light_position = vec3(0.0, 0.0, 0.0);
+instance uniform vec3 light_position = vec3(0.0, 0.0, 0.0);
 uniform float light_max_dist : hint_range(1.0, 20.0) = 4.8;
 uniform float dark_factor : hint_range(0.0, 1.0) = 0.25;
-uniform float fade_alpha : hint_range(0.0, 1.0) = 1.0;
+instance uniform float fade_alpha = 1.0;
 
 varying vec3 world_pos;
 

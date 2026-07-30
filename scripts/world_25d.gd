@@ -25,6 +25,14 @@ const TRAP_STRUGGLE_CYCLE := 0.64
 const TRAP_STRUGGLE_ANGLE := 0.72
 const TRAP_KEY_UP_TEXTURE: Texture2D = preload("res://assets/ui/tutorial_key_up.svg")
 const TRAP_KEY_DOWN_TEXTURE: Texture2D = preload("res://assets/ui/tutorial_key_down.svg")
+const FLOOR_LIGHT_SHADER: Shader = preload("res://scripts/floor_light.gdshader")
+const WALL_LIGHT_SHADER: Shader = preload("res://scripts/wall_light.gdshader")
+const GHOST_FADE_SHADER: Shader = preload("res://scripts/ghost_fade.gdshader")
+const WALL_FRAME_TEXTURE: Texture2D = preload("res://GJGamejam素材/wallHD_frame_256_prev.png")
+const WALL_SOLID_TEXTURE: Texture2D = preload("res://GJGamejam素材/wallHD_solid_256_prev.png")
+const BASE_WALL_TEXTURE: Texture2D = preload("res://GJGamejam素材/墙壁.png")
+const MONSTER_TEXTURE: Texture2D = preload("res://GJGamejam素材/人物/怪物.png")
+const THIEF_TEXTURE: Texture2D = preload("res://GJGamejam素材/人物/主角.png")
 
 const LAYER_MONSTER_WORLD := 1
 const LAYER_MONSTER := 2
@@ -61,6 +69,7 @@ const CRACK_TEXTURES := [
 ]
 
 var initialized := false
+var single_view_role := ""
 var world_root: Node3D
 var level_root: Node3D
 var monster_viewport: SubViewport
@@ -77,6 +86,7 @@ var item_room_keys: Dictionary = {}
 var trace_nodes: Dictionary = {}
 var stroke_nodes: Dictionary = {}
 var afterimage_nodes: Dictionary = {}
+var network_extra_actor_nodes: Dictionary = {}
 var room_visuals: Dictionary = {}
 var monster_ghost_visuals: Dictionary = {}
 var thief_ghost_visuals: Dictionary = {}
@@ -95,6 +105,9 @@ var camera_yaw_degrees := {
 
 var floor_material: StandardMaterial3D
 var floor_alt_material: StandardMaterial3D
+var floor_texture_materials: Dictionary = {}
+var standard_materials: Dictionary = {}
+var texture_cache: Dictionary = {}
 var wall_material: StandardMaterial3D
 var wall_front_material: StandardMaterial3D
 var dark_material: StandardMaterial3D
@@ -118,9 +131,14 @@ const FURNITURE_DROP_HEIGHT := 10.0
 const FULL_WALL_HEIGHT := 8.5
 
 
-func setup(shared_world: World3D, isolated_world := false) -> void:
+func setup(
+	shared_world: World3D,
+	isolated_world := false,
+	only_role := "",
+) -> void:
 	if initialized:
 		return
+	single_view_role = only_role if only_role in ["monster", "thief"] else ""
 	# The 2D editor viewport has no World3D even though @tool runs this setup.
 	# Give the preview SubViewports their own world instead of leaving setup
 	# half-finished and producing null-node errors every editor frame.
@@ -142,19 +160,39 @@ func setup(shared_world: World3D, isolated_world := false) -> void:
 	var env_node: WorldEnvironment = world_root.get_node_or_null("GothicEnvironment")
 	if env_node:
 		render_world.environment = env_node.environment
-	monster_viewport = _create_viewport("MonsterViewport", render_world)
-	thief_viewport = _create_viewport("ThiefViewport", render_world)
+	if _renders_role("monster"):
+		monster_viewport = _create_viewport("MonsterViewport", render_world)
+		monster_camera = _create_camera(
+			monster_viewport,
+			"MonsterCamera",
+			LAYER_MONSTER_WORLD | LAYER_MONSTER | LAYER_SHARED_ACTORS
+			| LAYER_AFTERIMAGE | LAYER_MONSTER_EFFECT | LAYER_MONSTER_GHOST,
+		)
+	if _renders_role("thief"):
+		thief_viewport = _create_viewport("ThiefViewport", render_world)
+		thief_camera = _create_camera(
+			thief_viewport,
+			"ThiefCamera",
+			LAYER_THIEF_WORLD | LAYER_THIEF | LAYER_SHARED_ACTORS | LAYER_THIEF_GHOST,
+		)
 	# Tutorial sessions run concurrently. Parenting their generated world below
 	# one of the shared-world SubViewports keeps every session in its own
 	# World3D while both tutorial cameras can still render that same resource.
 	if isolated_world:
-		world_root.reparent(monster_viewport)
-	monster_camera = _create_camera(monster_viewport, "MonsterCamera", LAYER_MONSTER_WORLD | LAYER_MONSTER | LAYER_SHARED_ACTORS | LAYER_AFTERIMAGE | LAYER_MONSTER_EFFECT | LAYER_MONSTER_GHOST)
-	thief_camera = _create_camera(thief_viewport, "ThiefCamera", LAYER_THIEF_WORLD | LAYER_THIEF | LAYER_SHARED_ACTORS | LAYER_THIEF_GHOST)
+		var host_viewport := (
+			monster_viewport
+			if is_instance_valid(monster_viewport)
+			else thief_viewport
+		)
+		world_root.reparent(host_viewport)
 	monster_node = _create_actor("monster", LAYER_MONSTER)
 	thief_node = _create_actor("thief", LAYER_THIEF)
 	attack_cone = _create_attack_cone()
 	initialized = true
+
+
+func _renders_role(role: String) -> bool:
+	return single_view_role.is_empty() or single_view_role == role
 
 
 func _create_materials() -> void:
@@ -168,13 +206,12 @@ func _create_materials() -> void:
 	wall2_material = StandardMaterial3D.new()
 	wall2_material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	wall2_material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	var wall_shader := load("res://scripts/wall_light.gdshader") as Shader
 	wall_frame_material = ShaderMaterial.new()
-	wall_frame_material.shader = wall_shader
-	wall_frame_material.set_shader_parameter("wall_tex", load("res://GJGamejam素材/wallHD_frame_256_prev.png"))
+	wall_frame_material.shader = WALL_LIGHT_SHADER
+	wall_frame_material.set_shader_parameter("wall_tex", WALL_FRAME_TEXTURE)
 	wall_solid_material = ShaderMaterial.new()
-	wall_solid_material.shader = wall_shader
-	wall_solid_material.set_shader_parameter("wall_tex", load("res://GJGamejam素材/wallHD_solid_256_prev.png"))
+	wall_solid_material.shader = WALL_LIGHT_SHADER
+	wall_solid_material.set_shader_parameter("wall_tex", WALL_SOLID_TEXTURE)
 	_create_ghost_materials()
 
 
@@ -189,17 +226,42 @@ func _material(color: Color, roughness: float, transparent := false, unshaded :=
 	return material
 
 
-func _floor_texture_material(path: String) -> ShaderMaterial:
-	var shader := load("res://scripts/floor_light.gdshader") as Shader
-	var material := ShaderMaterial.new()
-	material.shader = shader
-	material.set_shader_parameter("floor_tex", load(path))
+func _cached_material(
+	key: String,
+	color: Color,
+	roughness: float,
+	transparent := false,
+	unshaded := false,
+) -> StandardMaterial3D:
+	if standard_materials.has(key):
+		return standard_materials[key]
+	var material := _material(color, roughness, transparent, unshaded)
+	standard_materials[key] = material
 	return material
+
+
+func _floor_texture_material(path: String) -> ShaderMaterial:
+	if floor_texture_materials.has(path):
+		return floor_texture_materials[path]
+	var material := ShaderMaterial.new()
+	material.shader = FLOOR_LIGHT_SHADER
+	material.set_shader_parameter("floor_tex", _cached_texture(path))
+	floor_texture_materials[path] = material
+	return material
+
+
+func _cached_texture(path: String) -> Texture2D:
+	if texture_cache.has(path):
+		return texture_cache[path]
+	var texture := load(path) as Texture2D
+	if texture:
+		texture_cache[path] = texture
+	return texture
 
 
 func _wall_texture_material() -> StandardMaterial3D:
 	var material := StandardMaterial3D.new()
-	material.albedo_texture = load("res://GJGamejam素材/墙壁.png")
+	material.albedo_texture = BASE_WALL_TEXTURE
 	material.uv1_scale = Vector3(0.3, 0.3, 0.3)
 	material.uv1_triplanar = true
 	material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
@@ -260,6 +322,7 @@ func _create_camera(viewport: SubViewport, camera_name: String, mask: int) -> Ca
 func rebuild(rooms: Array) -> void:
 	if not initialized:
 		return
+	reset_network_actors()
 	for child in level_root.get_children():
 		child.queue_free()
 	furniture_nodes.clear()
@@ -286,6 +349,139 @@ func rebuild(rooms: Array) -> void:
 			_create_furniture_node(room["coord"], furniture)
 		for item in room["items"]:
 			_create_item_node(room["coord"], item)
+
+
+func reset_network_actors() -> void:
+	for node_variant in network_extra_actor_nodes.values():
+		var node: Node3D = node_variant
+		if is_instance_valid(node):
+			node.queue_free()
+	network_extra_actor_nodes.clear()
+	for node_variant in afterimage_nodes.values():
+		var node: Node3D = node_variant
+		if is_instance_valid(node):
+			node.queue_free()
+	afterimage_nodes.clear()
+
+
+func set_network_viewport_size(next_size: Vector2i) -> void:
+	if not initialized:
+		return
+	var safe_size := Vector2i(maxi(next_size.x, 320), maxi(next_size.y, 180))
+	if is_instance_valid(monster_viewport):
+		monster_viewport.size = safe_size
+	if is_instance_valid(thief_viewport):
+		thief_viewport.size = safe_size
+
+
+func sync_network(
+	rooms: Array,
+	actors: Dictionary,
+	local_peer_id: int,
+	time: float,
+	afterimages: Array = [],
+) -> void:
+	if not initialized or actors.is_empty() or not actors.has(local_peer_id):
+		return
+	var actor_ids := actors.keys()
+	actor_ids.sort()
+	var monster_peer_id := 0
+	var thief_peer_ids: Array[int] = []
+	for peer_id_variant in actor_ids:
+		var peer_id := int(peer_id_variant)
+		var actor: Dictionary = actors[peer_id_variant]
+		if str(actor.get("slot", "")) == "monster":
+			monster_peer_id = peer_id
+		else:
+			thief_peer_ids.append(peer_id)
+	if monster_peer_id == 0 or thief_peer_ids.is_empty():
+		return
+
+	var local_actor: Dictionary = actors[local_peer_id]
+	var local_role := (
+		"monster"
+		if str(local_actor.get("slot", "")) == "monster"
+		else "thief"
+	)
+	var primary_thief_peer_id := (
+		local_peer_id
+		if local_role == "thief"
+		else thief_peer_ids[0]
+	)
+	var monster_actor: Dictionary = actors[monster_peer_id]
+	var primary_thief: Dictionary = actors[primary_thief_peer_id]
+	var attack_active := (
+		time - float(monster_actor.get("attack_started_at", -10.0))
+		< ATTACK_ANIMATION_SECONDS
+	)
+	sync(
+		rooms,
+		monster_actor,
+		primary_thief,
+		afterimages,
+		{"monster": "", "thief": ""},
+		attack_active,
+		time,
+	)
+
+	var live_extra_ids: Dictionary = {}
+	for peer_id_variant in actor_ids:
+		var peer_id := int(peer_id_variant)
+		var actor: Dictionary = actors[peer_id_variant]
+		var actor_role := (
+			"monster"
+			if str(actor.get("slot", "")) == "monster"
+			else "thief"
+		)
+		var actor_node: Node3D
+		if peer_id == monster_peer_id:
+			actor_node = monster_node
+		elif peer_id == primary_thief_peer_id:
+			actor_node = thief_node
+		else:
+			live_extra_ids[peer_id] = true
+			if not network_extra_actor_nodes.has(peer_id):
+				var extra := _create_actor("thief", LAYER_THIEF)
+				extra.name = "NetworkThief_%d" % peer_id
+				network_extra_actor_nodes[peer_id] = extra
+			actor_node = network_extra_actor_nodes[peer_id]
+		_sync_actor(actor_node, actor, time, actor_role == "thief")
+
+		var layers := 0
+		if bool(actor.get("extracted", false)):
+			layers = 0
+		elif peer_id == local_peer_id:
+			layers = LAYER_MONSTER if local_role == "monster" else LAYER_THIEF
+		elif local_role == "monster" and actor_role == "thief":
+			# A monster never receives a solid thief silhouette. Movement is
+			# communicated by the short-lived red afterimages instead. A downed
+			# body remains visible so its rescue state is readable.
+			layers = (
+				LAYER_SHARED_ACTORS
+				if (
+					bool(actor.get("downed", false))
+					and actor["room"] == local_actor["room"]
+				)
+				else 0
+			)
+		elif actor["room"] == local_actor["room"]:
+			layers = (
+				LAYER_THIEF
+				if local_role == "thief" and actor_role == "thief"
+				else LAYER_SHARED_ACTORS
+			)
+		_set_actor_visual_layers(actor_node, layers)
+
+	for peer_id_variant in network_extra_actor_nodes:
+		var peer_id := int(peer_id_variant)
+		if live_extra_ids.has(peer_id):
+			continue
+		_set_actor_visual_layers(network_extra_actor_nodes[peer_id], 0)
+
+	if local_role == "monster":
+		_follow_camera(monster_camera, local_actor, "monster")
+	else:
+		_follow_camera(thief_camera, local_actor, "thief")
 
 
 func _create_room(room: Dictionary) -> void:
@@ -331,7 +527,12 @@ func _create_room(room: Dictionary) -> void:
 	var inset_mesh := BoxMesh.new()
 	inset_mesh.size = Vector3(ROOM_EXTENT * 2.0 - 0.7, 0.025, ROOM_EXTENT * 2.0 - 0.7)
 	inset.mesh = inset_mesh
-	inset.material_override = _material(Color(0.08, 0.075, 0.06, 0.18), 1.0, true)
+	inset.material_override = _cached_material(
+		"floor_inset",
+		Color(0.08, 0.075, 0.06, 0.18),
+		1.0,
+		true,
+	)
 	inset.position = origin + Vector3(0, 0.002, 0)
 	_register_room_visual(coord, inset)
 	level_root.add_child(inset)
@@ -347,31 +548,28 @@ func _create_room(room: Dictionary) -> void:
 	if not lights.is_empty():
 		var light_pos: Vector3 = lights[0]
 		if floor_node and room.has("floor_texture"):
-			var mat: ShaderMaterial = floor_node.material_override as ShaderMaterial
-			if mat:
-				mat.set_shader_parameter("light_position", light_pos)
+			floor_node.set_instance_shader_parameter("light_position", light_pos)
 		# Update wall shaders too
 		for fw_dict in [monster_full_walls, thief_full_walls]:
 			if fw_dict.has(rk):
 				for side_node in fw_dict[rk].values():
 					if is_instance_valid(side_node):
-						var wmat: ShaderMaterial = side_node.material_override as ShaderMaterial
-						if wmat:
-							wmat.set_shader_parameter("light_position", light_pos)
+						side_node.set_instance_shader_parameter("light_position", light_pos)
 	if coord == Vector2i(0, 5):
 		_create_exit_marker(coord)
 	_create_ghost_room(coord, origin, room["doors"])
 
 
 func _create_ghost_materials() -> void:
-	var shader := load("res://scripts/ghost_fade.gdshader") as Shader
-	if not shader:
+	if not GHOST_FADE_SHADER:
 		push_error("Failed to load ghost_fade.gdshader")
 		return
-	monster_ghost_shader = ShaderMaterial.new()
-	monster_ghost_shader.shader = shader
-	thief_ghost_shader = ShaderMaterial.new()
-	thief_ghost_shader.shader = shader
+	if _renders_role("monster"):
+		monster_ghost_shader = ShaderMaterial.new()
+		monster_ghost_shader.shader = GHOST_FADE_SHADER
+	if _renders_role("thief"):
+		thief_ghost_shader = ShaderMaterial.new()
+		thief_ghost_shader.shader = GHOST_FADE_SHADER
 
 
 func _create_room_lights(coord: Vector2i, origin: Vector3) -> void:
@@ -396,7 +594,20 @@ func _create_full_walls(coord: Vector2i, origin: Vector3, doors: Array) -> void:
 		"left":  {"pos": origin + Vector3(-ROOM_EXTENT, FULL_WALL_HEIGHT / 2.0, 0), "rot_y": PI / 2.0},
 		"right": {"pos": origin + Vector3( ROOM_EXTENT, FULL_WALL_HEIGHT / 2.0, 0), "rot_y": -PI / 2.0},
 	}
-	for role_info in [{"role": "monster", "dict": monster_full_walls, "layer": LAYER_MONSTER_WORLD}, {"role": "thief", "dict": thief_full_walls, "layer": LAYER_THIEF_WORLD}]:
+	var role_infos: Array[Dictionary] = []
+	if _renders_role("monster"):
+		role_infos.append({
+			"role": "monster",
+			"dict": monster_full_walls,
+			"layer": LAYER_MONSTER_WORLD,
+		})
+	if _renders_role("thief"):
+		role_infos.append({
+			"role": "thief",
+			"dict": thief_full_walls,
+			"layer": LAYER_THIEF_WORLD,
+		})
+	for role_info in role_infos:
 		var role_nodes: Dictionary = {}
 		for side in ["up", "right", "down", "left"]:
 			var wall := MeshInstance3D.new()
@@ -405,33 +616,12 @@ func _create_full_walls(coord: Vector2i, origin: Vector3, doors: Array) -> void:
 			plane.size = Vector2(wall_width, FULL_WALL_HEIGHT)
 			plane.orientation = PlaneMesh.FACE_Z
 			wall.mesh = plane
-			wall.material_override = (wall_frame_material if doors.has(side) else wall_solid_material).duplicate()
-			wall.material_override.set_shader_parameter("fade_alpha", 0.0)
+			wall.material_override = wall_frame_material if doors.has(side) else wall_solid_material
+			wall.set_instance_shader_parameter("fade_alpha", 0.0)
 			wall.position = side_data[side]["pos"]
 			wall.rotation.y = side_data[side]["rot_y"]
 			wall.layers = 0
 			level_root.add_child(wall)
-			# Black outline strips around full wall edges
-			var outline_mat := StandardMaterial3D.new()
-			outline_mat.albedo_color = Color.BLACK
-			outline_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-			var hw := wall_width / 2.0
-			var hh := FULL_WALL_HEIGHT / 2.0
-			for strip_info in [
-				{"size": Vector3(wall_width, 0.04, 0.02), "off": Vector3(0,  hh, 0)},
-				{"size": Vector3(wall_width, 0.04, 0.02), "off": Vector3(0, -hh, 0)},
-				{"size": Vector3(0.04, FULL_WALL_HEIGHT, 0.02), "off": Vector3( hw, 0, 0)},
-				{"size": Vector3(0.04, FULL_WALL_HEIGHT, 0.02), "off": Vector3(-hw, 0, 0)},
-			]:
-				var strip := MeshInstance3D.new()
-				var strip_mesh := BoxMesh.new()
-				strip_mesh.size = strip_info["size"]
-				strip.mesh = strip_mesh
-				strip.material_override = outline_mat
-				strip.position = side_data[side]["pos"] + strip_info["off"]
-				strip.rotation.y = side_data[side]["rot_y"]
-				strip.layers = 0
-				level_root.add_child(strip)
 			role_nodes[side] = wall
 		role_info["dict"][room_key] = role_nodes
 	# Hide original walls — keep collision, full walls are the new visuals
@@ -490,9 +680,13 @@ func _create_room_pillars(coord: Vector2i, origin: Vector3) -> void:
 	var hw := ROOM_EXTENT
 	var h := FULL_WALL_HEIGHT
 	var pillar_size := 0.12
-	var black := StandardMaterial3D.new()
-	black.albedo_color = Color.BLACK
-	black.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	var black := _cached_material(
+		"black_unshaded",
+		Color.BLACK,
+		1.0,
+		false,
+		true,
+	)
 	# 4 vertical corner pillars — tracked per corner for camera-direction hiding
 	var pillar_nodes: Dictionary = {}
 	for x in [-hw, hw]:
@@ -534,9 +728,14 @@ func _create_room_pillars(coord: Vector2i, origin: Vector3) -> void:
 func _create_ghost_room(coord: Vector2i, origin: Vector3, doors: Array) -> void:
 	var room_key := _room_key(coord)
 	var floor_size := (ROOM_EXTENT * 2.0 - 0.3) * 1.05
+	var ghost_layers: Array[int] = []
+	if _renders_role("monster"):
+		ghost_layers.append(LAYER_MONSTER_GHOST)
+	if _renders_role("thief"):
+		ghost_layers.append(LAYER_THIEF_GHOST)
 
 	# Ghost floor — one copy per ghost layer
-	for layer in [LAYER_MONSTER_GHOST, LAYER_THIEF_GHOST]:
+	for layer in ghost_layers:
 		var mat := monster_ghost_shader if layer == LAYER_MONSTER_GHOST else thief_ghost_shader
 		var ghost_floor := MeshInstance3D.new()
 		ghost_floor.name = "GhostFloor_%d_%d" % [coord.x, coord.y]
@@ -563,7 +762,7 @@ func _create_ghost_room(coord: Vector2i, origin: Vector3, doors: Array) -> void:
 	var gap := 2.65
 	for side in ["up", "right", "down", "left"]:
 		var has_door: bool = doors.has(side)
-		for layer in [LAYER_MONSTER_GHOST, LAYER_THIEF_GHOST]:
+		for layer in ghost_layers:
 			var mat := monster_ghost_shader if layer == LAYER_MONSTER_GHOST else thief_ghost_shader
 			if not has_door:
 				_add_ghost_wall_piece(coord, origin, side, 0.0, total, height, layer, mat)
@@ -624,7 +823,13 @@ func _create_exit_marker(room: Vector2i) -> void:
 	mesh.bottom_radius = 0.52
 	mesh.height = 0.025
 	disc.mesh = mesh
-	disc.material_override = _material(Color(0.16, 0.82, 0.5, 0.36), 0.9, true, true)
+	disc.material_override = _cached_material(
+		"exit_marker",
+		Color(0.16, 0.82, 0.5, 0.36),
+		0.9,
+		true,
+		true,
+	)
 	_register_room_visual(room, disc)
 	marker.add_child(disc)
 	var label := Label3D.new()
@@ -681,7 +886,7 @@ func _add_wall_outline_strips(room: Vector2i, origin: Vector3, offset: float, le
 	var strip_thick := 0.03
 	var strip_off := 0.005
 	var half := length / 2.0
-	var mat := _material(Color.BLACK, 0.9, false, true)
+	var mat := _cached_material("black_unshaded", Color.BLACK, 1.0, false, true)
 	# Top strip
 	_create_strip(room, origin, offset, height, half, wall_axis, strip_thick, strip_off, is_z_axis, true, length, height, mat)
 	# Bottom strip
@@ -720,7 +925,7 @@ func _add_floor_outline(room: Vector2i, origin: Vector3, floor_tex: String) -> v
 	var strip_w := 0.06 if is_wooden else 0.06
 	var strip_y := -0.07
 	var strip_off := 0.005
-	var mat := _material(Color.BLACK, 0.9, false, true)
+	var mat := _cached_material("black_unshaded", Color.BLACK, 1.0, false, true)
 	var floor_len := ROOM_EXTENT * 2.0 - 0.3
 	for i in range(4):
 		var strip := MeshInstance3D.new()
@@ -751,7 +956,7 @@ func _add_floor_cracks(room: Vector2i, origin: Vector3) -> void:
 		var crack := Sprite3D.new()
 		crack.name = "Crack_%d_%d_%d" % [room.x, room.y, _i]
 		var tex_idx := rng.randi_range(0, CRACK_TEXTURES.size() - 1)
-		crack.texture = load(CRACK_TEXTURES[tex_idx])
+		crack.texture = _cached_texture(CRACK_TEXTURES[tex_idx])
 		crack.pixel_size = 0.009
 		crack.position = origin + Vector3(
 			rng.randf_range(-extent, extent),
@@ -800,7 +1005,7 @@ func _create_actor(role: String, layer: int) -> Node3D:
 	var sway_pivot := Node3D.new()
 	sway_pivot.name = "SwayPivot"
 	actor.add_child(sway_pivot)
-	var texture: Texture2D = load("res://GJGamejam素材/人物/怪物.png" if role == "monster" else "res://GJGamejam素材/人物/主角.png")
+	var texture := MONSTER_TEXTURE if role == "monster" else THIEF_TEXTURE
 	var pixel_size := 0.00263 if role == "monster" else 0.00270
 	var collision_shape := CollisionShape3D.new()
 	collision_shape.name = "CollisionShape3D"
@@ -905,7 +1110,11 @@ func _create_furniture_node(room: Vector2i, furniture: Dictionary) -> void:
 	var mesh := BoxMesh.new()
 	mesh.size = info["size"]
 	base.mesh = mesh
-	base.material_override = _material(Color("#4a4338"), 0.94)
+	base.material_override = _cached_material(
+		"furniture_base",
+		Color("#4a4338"),
+		0.94,
+	)
 	base.position.y = mesh.size.y / 2.0
 	base.visible = false
 	_register_room_visual(room, base)
@@ -929,7 +1138,13 @@ func _create_furniture_node(room: Vector2i, furniture: Dictionary) -> void:
 	selection_mesh.bottom_radius = info["sel_radius"]
 	selection_mesh.height = 0.022
 	selection.mesh = selection_mesh
-	selection.material_override = _material(Color(1.0, 0.79, 0.18, 0.38), 0.9, true, true)
+	selection.material_override = _cached_material(
+		"furniture_selection",
+		Color(1.0, 0.79, 0.18, 0.38),
+		0.9,
+		true,
+		true,
+	)
 	selection.position.y = 0.015
 	_register_room_visual(room, selection)
 	selection.visible = false
@@ -939,7 +1154,7 @@ func _create_furniture_node(room: Vector2i, furniture: Dictionary) -> void:
 	var ps: float = info["pixel_size"]
 	var outline := Sprite3D.new()
 	outline.name = "OutlineSprite"
-	outline.texture = load(info["path"])
+	outline.texture = _cached_texture(str(info["path"]))
 	outline.pixel_size = ps * 1.08
 	outline.position.y = outline_y
 	outline.modulate = Color.BLACK
@@ -948,7 +1163,7 @@ func _create_furniture_node(room: Vector2i, furniture: Dictionary) -> void:
 	node.add_child(outline)
 	var sprite := Sprite3D.new()
 	sprite.name = "PaperSprite"
-	sprite.texture = load(info["path"])
+	sprite.texture = _cached_texture(str(info["path"]))
 	sprite.pixel_size = ps
 	sprite.position.y = sprite_y
 	sprite.billboard = BaseMaterial3D.BILLBOARD_ENABLED
@@ -990,7 +1205,7 @@ func _create_item_node(room: Vector2i, item: Dictionary) -> void:
 	var sprite := Sprite3D.new()
 	sprite.name = "ItemSprite"
 	var visual := _item_visual_info(item)
-	sprite.texture = load(visual["path"])
+	sprite.texture = _cached_texture(str(visual["path"]))
 	sprite.pixel_size = float(visual["pixel_size"])
 	sprite.modulate = visual.get("color", Color.WHITE)
 	sprite.alpha_cut = SpriteBase3D.ALPHA_CUT_OPAQUE_PREPASS
@@ -1111,7 +1326,13 @@ func _create_attack_cone() -> MeshInstance3D:
 	arrays[Mesh.ARRAY_VERTEX] = vertices
 	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
 	cone.mesh = mesh
-	cone.material_override = _material(Color(1.0, 0.28, 0.12, 0.78), 1.0, true, true)
+	cone.material_override = _cached_material(
+		"attack_cone",
+		Color(1.0, 0.28, 0.12, 0.78),
+		1.0,
+		true,
+		true,
+	)
 	cone.layers = LAYER_MONSTER_EFFECT
 	cone.visible = false
 	world_root.add_child(cone)
@@ -1123,14 +1344,14 @@ func sync(rooms: Array, monster: Dictionary, thief: Dictionary, afterimages: Arr
 		not initialized
 		or not is_instance_valid(monster_node)
 		or not is_instance_valid(thief_node)
-		or not is_instance_valid(monster_camera)
-		or not is_instance_valid(thief_camera)
+		or (_renders_role("monster") and not is_instance_valid(monster_camera))
+		or (_renders_role("thief") and not is_instance_valid(thief_camera))
 		or not is_instance_valid(attack_cone)
 		or monster.is_empty()
 		or thief.is_empty()
 	):
 		return
-	if not monster_node or not thief_node or not monster_camera or not thief_camera:
+	if not monster_node or not thief_node:
 		return
 	_sync_actor(monster_node, monster, time, false)
 	_sync_actor(thief_node, thief, time, true)
@@ -1141,15 +1362,17 @@ func sync(rooms: Array, monster: Dictionary, thief: Dictionary, afterimages: Arr
 		thief_node,
 		LAYER_THIEF | (LAYER_SHARED_ACTORS if actors_share_room and not thief_hidden else 0),
 	)
-	_follow_camera(monster_camera, monster, "monster")
-	_follow_camera(thief_camera, thief, "thief")
+	if is_instance_valid(monster_camera):
+		_follow_camera(monster_camera, monster, "monster")
+	if is_instance_valid(thief_camera):
+		_follow_camera(thief_camera, thief, "thief")
 	# Trigger furniture bounce BEFORE the room loop so furniture
 	# appears at drop height on the very first frame of a new room.
 	var m_rk := _room_key(monster["room"])
 	var t_rk := _room_key(thief["room"])
-	if m_rk != _room_key(active_monster_room):
+	if _renders_role("monster") and m_rk != _room_key(active_monster_room):
 		furniture_bounces[m_rk] = time
-	if t_rk != _room_key(active_thief_room):
+	if _renders_role("thief") and t_rk != _room_key(active_thief_room):
 		furniture_bounces[t_rk] = time
 	for room in rooms:
 		var coord: Vector2i = room["coord"]
@@ -1248,7 +1471,7 @@ func sync(rooms: Array, monster: Dictionary, thief: Dictionary, afterimages: Arr
 					if trap_state == "active"
 					else "res://GJGamejam素材/2.5D物品/r3_trapopen_clean.png"
 				)
-				var trap_texture: Texture2D = load(trap_path)
+				var trap_texture := _cached_texture(trap_path)
 				if item_sprite.texture != trap_texture:
 					item_sprite.texture = trap_texture
 				if trap_state == "sprung":
@@ -1272,8 +1495,10 @@ func sync(rooms: Array, monster: Dictionary, thief: Dictionary, afterimages: Arr
 	_sync_afterimages(afterimages, monster["room"], thief["room"])
 	_sync_attack(monster, attack_active, time)
 	_sync_room_layers(monster["room"], thief["room"], time)
-	_sync_full_walls(monster["room"], camera_yaw_degrees["monster"], "monster")
-	_sync_full_walls(thief["room"], camera_yaw_degrees["thief"], "thief")
+	if _renders_role("monster"):
+		_sync_full_walls(monster["room"], camera_yaw_degrees["monster"], "monster")
+	if _renders_role("thief"):
+		_sync_full_walls(thief["room"], camera_yaw_degrees["thief"], "thief")
 	_update_wall_fades(time)
 	_update_furniture_bounces(time)
 	_sync_ghost_visibility(monster, thief)
@@ -1516,14 +1741,13 @@ func _sync_attack(monster: Dictionary, active: bool, time: float) -> void:
 
 func _sync_afterimages(images: Array, monster_room: Vector2i, thief_room: Vector2i) -> void:
 	var live: Dictionary = {}
-	var actors_share_room := monster_room == thief_room
 	for image in images:
-		var key := "%.4f" % float(image["created"])
+		var key := str(image.get("id", "%.4f" % float(image["created"])))
 		live[key] = true
 		if not afterimage_nodes.has(key):
 			var node := Node3D.new()
 			var sprite := Sprite3D.new()
-			sprite.texture = load("res://GJGamejam素材/人物/主角.png")
+			sprite.texture = THIEF_TEXTURE
 			sprite.pixel_size = 0.00270
 			sprite.position.y = 0.86
 			sprite.billboard = BaseMaterial3D.BILLBOARD_ENABLED
@@ -1535,7 +1759,10 @@ func _sync_afterimages(images: Array, monster_room: Vector2i, thief_room: Vector
 			afterimage_nodes[key] = node
 		var image_node: Node3D = afterimage_nodes[key]
 		image_node.position = world_position(image["room"], image["pos"])
-		image_node.visible = actors_share_room and image["room"] == monster_room
+		image_node.visible = (
+			image["room"] == monster_room
+			and (image.has("peer_id") or thief_room == monster_room)
+		)
 	for key in afterimage_nodes.keys():
 		if not live.has(key):
 			var stale: Node3D = afterimage_nodes[key]
@@ -1628,6 +1855,10 @@ func _reassign_item_room_visual(item_id: String, node: Node3D, room: Vector2i) -
 
 
 func _sync_room_layers(monster_room: Vector2i, thief_room: Vector2i, game_time := 0.0) -> void:
+	if not _renders_role("monster"):
+		monster_room = INVALID_ROOM
+	if not _renders_role("thief"):
+		thief_room = INVALID_ROOM
 	if monster_room == active_monster_room and thief_room == active_thief_room:
 		return
 	# Enable the destination rooms first. The previous rooms remain visible until
@@ -1641,10 +1872,10 @@ func _sync_room_layers(monster_room: Vector2i, thief_room: Vector2i, game_time :
 	var old_t := _room_key(active_thief_room)
 	active_monster_room = monster_room
 	active_thief_room = thief_room
-	if m_key != old_m:
+	if monster_room != INVALID_ROOM and m_key != old_m:
 		wall_fades["monster_" + m_key] = {"phase": "appear", "start_time": game_time}
 		furniture_bounces[m_key] = game_time
-	if t_key != old_t:
+	if thief_room != INVALID_ROOM and t_key != old_t:
 		wall_fades["thief_" + t_key] = {"phase": "appear", "start_time": game_time}
 		furniture_bounces[t_key] = game_time
 	# Per-player full wall layer assignment
@@ -1722,9 +1953,7 @@ func _update_wall_fades(game_time: float) -> void:
 		if fw_dict.has(room_key):
 			for side_node in fw_dict[room_key].values():
 				if is_instance_valid(side_node):
-					var wmat: ShaderMaterial = side_node.material_override as ShaderMaterial
-					if wmat:
-						wmat.set_shader_parameter("fade_alpha", alpha)
+					side_node.set_instance_shader_parameter("fade_alpha", alpha)
 		if progress >= 1.0:
 			to_erase.append(fade_key)
 	for key in to_erase:
@@ -1761,13 +1990,17 @@ func _furniture_bounce_offset(room_key: String, game_time: float) -> float:
 
 
 func _sync_ghost_visibility(monster: Dictionary, thief: Dictionary) -> void:
-	if not monster_ghost_shader or not thief_ghost_shader:
-		return
 	# Update shader uniforms with exact player world positions
-	monster_ghost_shader.set_shader_parameter("player_position",
-		world_position(monster["room"], monster["pos"], 0.38))
-	thief_ghost_shader.set_shader_parameter("player_position",
-		world_position(thief["room"], thief["pos"], 0.38))
+	if monster_ghost_shader:
+		monster_ghost_shader.set_shader_parameter(
+			"player_position",
+			world_position(monster["room"], monster["pos"], 0.38),
+		)
+	if thief_ghost_shader:
+		thief_ghost_shader.set_shader_parameter(
+			"player_position",
+			world_position(thief["room"], thief["pos"], 0.38),
+		)
 
 
 func _layers_for_room_key(key: String) -> int:

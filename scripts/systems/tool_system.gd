@@ -222,18 +222,14 @@ func _device_position(role: String, forward_distance := 0.42) -> Vector2:
 
 func _spawn_device(role: String, device_type: String, position: Vector2) -> Dictionary:
 	var actor := _get_actor(role)
-	var device := {
-		"id": "device-%d" % next_device_id,
-		"kind": "device",
-		"device_type": device_type,
-		"label": TOOL_DEFS[device_type]["label"],
-		"value": 0,
-		"owner": role,
-		"pos": position,
-		"collected": false,
-		"created": elapsed,
-		"state": "active",
-	}
+	var device := GAMEPLAY_STATE_FACTORY.device(
+		device_type,
+		"device-%d" % next_device_id,
+		str(TOOL_DEFS[device_type]["label"]),
+		role,
+		position,
+		elapsed,
+	)
 	next_device_id += 1
 	_room_at(actor["room"])["items"].append(device)
 	return device
