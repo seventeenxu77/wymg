@@ -86,6 +86,8 @@ var pending_combat_test := false
 var pending_tool_test := false
 var active_storage_id := ""
 var selected_treasure := 0
+var carrying_panel_open := false
+var selected_carried_loot := 0
 var feedback_message := ""
 var feedback_seconds := 0.0
 var actor_hit_animations: Dictionary = {}
@@ -212,6 +214,8 @@ func start_match(players: Dictionary) -> void:
 	match_elapsed = 0.0
 	active_storage_id = ""
 	selected_treasure = 0
+	carrying_panel_open = false
+	selected_carried_loot = 0
 	feedback_message = ""
 	feedback_seconds = 0.0
 	actor_hit_animations.clear()
@@ -286,6 +290,8 @@ func stop_match() -> void:
 	pending_tool_test = false
 	active_storage_id = ""
 	selected_treasure = 0
+	carrying_panel_open = false
+	selected_carried_loot = 0
 	feedback_message = ""
 	feedback_seconds = 0.0
 	actor_hit_animations.clear()
@@ -301,6 +307,10 @@ func handle_input(event: InputEvent) -> bool:
 	if not (event is InputEventKey) or not event.pressed or event.echo:
 		return false
 	if event.keycode == KEY_ESCAPE:
+		if carrying_panel_open:
+			carrying_panel_open = false
+			queue_redraw()
+			return true
 		if not active_storage_id.is_empty():
 			active_storage_id = ""
 			queue_redraw()
@@ -311,6 +321,7 @@ func handle_input(event: InputEvent) -> bool:
 		return true
 	var local_actor := _local_display_actor()
 	if bool(local_actor.get("trapped", false)):
+		carrying_panel_open = false
 		var pressed_left: bool = (
 			event.physical_keycode == KEY_A
 			or event.keycode == KEY_LEFT
@@ -322,7 +333,14 @@ func handle_input(event: InputEvent) -> bool:
 		if pressed_left or pressed_right:
 			_request_action("trap_escape", {"left": pressed_left})
 			return true
-	match event.keycode:
+	if carrying_panel_open and _handle_carrying_panel_input(event):
+		return true
+	var pressed_key: int = int(
+		event.physical_keycode
+		if event.physical_keycode != 0
+		else event.keycode
+	)
+	match pressed_key:
 		KEY_Q:
 			if world_renderer:
 				world_renderer.rotate_camera(_local_role(), -1)
@@ -334,6 +352,10 @@ func handle_input(event: InputEvent) -> bool:
 		KEY_H:
 			_request_action("end_hide")
 			return true
+		KEY_SHIFT:
+			if str(local_actor.get("profession_id", "")) == "collector":
+				_request_action("use_active_skill")
+				return true
 		KEY_SPACE:
 			if _local_role() == "monster":
 				_request_action("attack")
@@ -373,11 +395,74 @@ func handle_input(event: InputEvent) -> bool:
 			if _local_role() == "thief":
 				_request_action("pickup_item")
 				return true
+		KEY_B:
+			if _local_role() == "thief":
+				var carried_loot: Array = local_actor.get("carried_loot", [])
+				if not carried_loot.is_empty():
+					carrying_panel_open = true
+					selected_carried_loot = clampi(
+						selected_carried_loot,
+						0,
+						carried_loot.size() - 1,
+					)
+					queue_redraw()
+				return true
+		KEY_T:
+			if _local_role() == "thief":
+				_request_action("quick_drop_loot")
+				return true
 		KEY_V:
 			if _local_role() == "thief":
 				_request_action("extract")
 				return true
 	return false
+
+
+func _handle_carrying_panel_input(event: InputEventKey) -> bool:
+	var carried_loot: Array = _local_display_actor().get("carried_loot", [])
+	if carried_loot.is_empty():
+		carrying_panel_open = false
+		selected_carried_loot = 0
+		queue_redraw()
+		return true
+	var key: int = int(
+		event.physical_keycode
+		if event.physical_keycode != 0
+		else event.keycode
+	)
+	match key:
+		KEY_W, KEY_UP:
+			selected_carried_loot = posmod(
+				selected_carried_loot - 1,
+				carried_loot.size(),
+			)
+			queue_redraw()
+			return true
+		KEY_S, KEY_DOWN:
+			selected_carried_loot = posmod(
+				selected_carried_loot + 1,
+				carried_loot.size(),
+			)
+			queue_redraw()
+			return true
+		KEY_R:
+			var selected: Dictionary = carried_loot[clampi(
+				selected_carried_loot,
+				0,
+				carried_loot.size() - 1,
+			)]
+			_request_action("drop_loot", {
+				"loot_id": str(selected.get("id", "")),
+			})
+			return true
+		KEY_T:
+			_request_action("quick_drop_loot")
+			return true
+		KEY_B:
+			carrying_panel_open = false
+			queue_redraw()
+			return true
+	return key in [KEY_A, KEY_D, KEY_LEFT, KEY_RIGHT]
 
 
 func _physics_process(delta: float) -> void:
@@ -767,6 +852,16 @@ func _apply_snapshot(snapshot: Dictionary, tick: int) -> void:
 		if record.size() < 30:
 			continue
 		var player: Dictionary = player_snapshot.get(peer_id, {})
+		var previous_actor: Dictionary = target_actors.get(peer_id, {})
+		var state_actor: Dictionary = (
+			mansion_state.actors.get(peer_id, {})
+			if mansion_state
+			else {}
+		)
+		var known_carried_loot: Array = state_actor.get(
+			"carried_loot",
+			previous_actor.get("carried_loot", []),
+		)
 		var direction := _direction_from_index(roundi(record[4]))
 		var tools: Array = []
 		var inventory_record: PackedFloat32Array = inventory_records.get(
@@ -808,6 +903,7 @@ func _apply_snapshot(snapshot: Dictionary, tick: int) -> void:
 			"peer_id": peer_id,
 			"name": str(player.get("name", "玩家")),
 			"slot": str(player.get("slot", "spectator")),
+			"profession_id": str(player.get("profession_id", "")),
 			"room": Vector2i(roundi(record[0]), roundi(record[1])),
 			"pos": Vector2(record[2], record[3]),
 			"dir": direction,
@@ -816,6 +912,9 @@ func _apply_snapshot(snapshot: Dictionary, tick: int) -> void:
 			"hidden_from_monster": record[6] > 0.5,
 			"carried_value": roundi(record[7]),
 			"carried_count": roundi(record[8]),
+			"carried_loot": known_carried_loot.duplicate(true),
+			"carried_weight": roundi(record[30]) if record.size() > 30 else 0,
+			"speed_multiplier": record[31] if record.size() > 31 else 1.0,
 			"pills": roundi(record[9]),
 			"extracted": record[10] > 0.5,
 			"extracted_value": roundi(record[11]),
@@ -847,6 +946,12 @@ func _apply_snapshot(snapshot: Dictionary, tick: int) -> void:
 			),
 			"teleport_started": record[28],
 			"teleport_ends": record[29],
+			"active_skill_ready_at": (
+				record[32] if record.size() > 32 else 0.0
+			),
+			"active_skill_trap_count": (
+				roundi(record[33]) if record.size() > 33 else 0
+			),
 		}
 	target_actors = actors.duplicate(true)
 	if session.is_server():
@@ -860,6 +965,7 @@ func _apply_snapshot(snapshot: Dictionary, tick: int) -> void:
 	for peer_id_variant in display_actors.keys():
 		if not target_actors.has(peer_id_variant):
 			display_actors.erase(peer_id_variant)
+	_sync_carrying_panel_state()
 	_sync_local_detector_visuals()
 	if session.is_server():
 		return
@@ -977,6 +1083,13 @@ func _apply_server_action(peer_id: int, action: String, payload: Dictionary = {}
 			)
 		"pickup_item":
 			event = mansion_state.pick_up_item(peer_id)
+		"drop_loot":
+			event = mansion_state.drop_carried_loot(
+				peer_id,
+				str(payload.get("loot_id", "")),
+			)
+		"quick_drop_loot":
+			event = mansion_state.quick_drop_lowest_loot(peer_id)
 		"extract":
 			event = mansion_state.extract_thief(peer_id)
 		"attack":
@@ -988,6 +1101,8 @@ func _apply_server_action(peer_id: int, action: String, payload: Dictionary = {}
 			)
 		"use_tool":
 			event = mansion_state.use_selected_tool(peer_id)
+		"use_active_skill":
+			event = mansion_state.use_active_skill(peer_id)
 		"trap_escape":
 			event = mansion_state.escape_trap(
 				peer_id,
@@ -1042,6 +1157,7 @@ func _present_world_event(event: Dictionary) -> void:
 		bool(event.get("accepted", false))
 		and (
 			str(event.get("kind", "")) == "tool"
+			or str(event.get("kind", "")) == "skill"
 			or (
 				str(event.get("kind", "")) == "item"
 				and event.has("actor")
@@ -1115,7 +1231,9 @@ func _present_tool_actor_mutation(mutation: Dictionary) -> void:
 			"extracted",
 			"extracted_value",
 			"carried_value",
+			"carried_weight",
 			"carried_loot",
+			"active_skill_ready_at",
 			"trapped",
 			"trapped_by",
 			"trapped_started_at",
@@ -1129,7 +1247,8 @@ func _present_tool_actor_mutation(mutation: Dictionary) -> void:
 					if mutation[key] is Array
 					else mutation[key]
 				)
-		actor_set[peer_id] = actor
+			actor_set[peer_id] = actor
+	_sync_carrying_panel_state()
 
 
 func _present_combat_event(event: Dictionary) -> void:
@@ -1246,7 +1365,7 @@ func _apply_actor_hit_animations() -> void:
 
 
 func _read_local_input() -> Vector2:
-	if not active_storage_id.is_empty():
+	if not active_storage_id.is_empty() or carrying_panel_open:
 		return Vector2.ZERO
 	var local_actor := _local_display_actor()
 	if (
@@ -1280,6 +1399,7 @@ func _read_local_rescue_input() -> bool:
 	return (
 		match_live
 		and active_storage_id.is_empty()
+		and not carrying_panel_open
 		and _local_role() == "thief"
 		and not bool(_local_display_actor().get("trapped", false))
 		and Input.is_physical_key_pressed(KEY_F)
@@ -1403,6 +1523,7 @@ func _draw() -> void:
 	_draw_storage_panel()
 	_draw_carry_status()
 	_draw_network_toolbelt()
+	_draw_carrying_panel()
 	_draw_feedback()
 
 
@@ -1737,8 +1858,8 @@ func _draw_carry_status() -> void:
 	if actor.is_empty():
 		return
 	var status_rect := Rect2(
-		Vector2(110, size.y - 264),
-		Vector2(420, 56),
+		Vector2(110, size.y - 288),
+		Vector2(420, 76),
 	)
 	draw_style_box(MAIN_MENU_STYLE.panel_style(), status_rect)
 	if _local_role() == "monster":
@@ -1749,7 +1870,7 @@ func _draw_carry_status() -> void:
 		draw_string(
 			UI_FONT,
 			status_rect.position + Vector2(18, 34),
-			"怪物横扫 · %s" % (
+			"横扫 · %s" % (
 				"冷却 %.1f 秒" % cooldown
 				if cooldown > 0.0
 				else "可以攻击"
@@ -1758,6 +1879,26 @@ func _draw_carry_status() -> void:
 			status_rect.size.x - 36,
 			20,
 			MAIN_MENU_STYLE.GOLD if cooldown <= 0.0 else MAIN_MENU_STYLE.MUTED,
+		)
+		var skill_cooldown := maxf(
+			float(actor.get("active_skill_ready_at", 0.0)) - match_elapsed,
+			0.0,
+		)
+		draw_string(
+			UI_FONT,
+			status_rect.position + Vector2(18, 61),
+			"Shift 机关 · %d / 3 · %s" % [
+				int(actor.get("active_skill_trap_count", 0)),
+				"冷却 %.1f 秒" % skill_cooldown
+				if skill_cooldown > 0.0
+				else "可以布置",
+			],
+			HORIZONTAL_ALIGNMENT_LEFT,
+			status_rect.size.x - 36,
+			17,
+			MAIN_MENU_STYLE.GOLD
+			if skill_cooldown <= 0.0
+			else MAIN_MENU_STYLE.MUTED,
 		)
 		return
 	var extracted := bool(actor.get("extracted", false))
@@ -1769,7 +1910,7 @@ func _draw_carry_status() -> void:
 		if extracted
 		else "已倒地 · 生命 0 / %d" % NETWORK_MANSION_STATE_SCRIPT.MAX_HP
 		if downed
-		else "生命 %d / %d · %s · 携带价值 %d · 财物 %d 件"
+		else "生命 %d / %d · %s · 价值 %d · 财物 %d 件"
 		% [
 			hp,
 			NETWORK_MANSION_STATE_SCRIPT.MAX_HP,
@@ -1791,6 +1932,80 @@ func _draw_carry_status() -> void:
 		else _local_accent() if hidden
 		else MAIN_MENU_STYLE.TEXT,
 	)
+	if not extracted and not downed:
+		draw_string(
+			UI_FONT,
+			status_rect.position + Vector2(18, 61),
+			"负重 %d · 当前速度 %.0f%%" % [
+				int(actor.get("carried_weight", 0)),
+				float(actor.get("speed_multiplier", 1.0)) * 100.0,
+			],
+			HORIZONTAL_ALIGNMENT_LEFT,
+			status_rect.size.x - 36,
+			17,
+			MAIN_MENU_STYLE.MUTED,
+		)
+
+
+func _draw_carrying_panel() -> void:
+	if not carrying_panel_open or _local_role() != "thief":
+		return
+	var actor := _local_display_actor()
+	var carried_loot: Array = actor.get("carried_loot", [])
+	if carried_loot.is_empty():
+		return
+	var visible_rows := mini(carried_loot.size(), 6)
+	var panel_size := Vector2(560, 126 + visible_rows * 52)
+	var panel_rect := Rect2((size - panel_size) * 0.5, panel_size)
+	draw_style_box(modal_panel_style, panel_rect)
+	draw_string(
+		UI_FONT,
+		panel_rect.position + Vector2(34, 46),
+		"携带藏品",
+		HORIZONTAL_ALIGNMENT_CENTER,
+		panel_rect.size.x - 68,
+		30,
+		MAIN_MENU_STYLE.TEXT,
+	)
+	var first_index := clampi(
+		selected_carried_loot - visible_rows + 1,
+		0,
+		maxi(carried_loot.size() - visible_rows, 0),
+	)
+	for row_index in range(visible_rows):
+		var loot_index := first_index + row_index
+		var loot: Dictionary = carried_loot[loot_index]
+		var row_rect := Rect2(
+			panel_rect.position + Vector2(38, 68 + row_index * 52),
+			Vector2(panel_rect.size.x - 76, 46),
+		)
+		draw_style_box(inventory_slot_style, row_rect)
+		if loot_index == selected_carried_loot:
+			draw_rect(row_rect.grow(-5.0), _local_accent(), false, 1.8)
+		draw_string(
+			UI_FONT,
+			row_rect.position + Vector2(18, 30),
+			"%s　价值 %d　重量 %d" % [
+				str(loot.get("label", "藏品")),
+				int(loot.get("value", 0)),
+				NETWORK_MANSION_STATE_SCRIPT.loot_weight(loot),
+			],
+			HORIZONTAL_ALIGNMENT_LEFT,
+			row_rect.size.x - 36,
+			19,
+			MAIN_MENU_STYLE.TEXT,
+		)
+	draw_string(
+		UI_FONT,
+		panel_rect.position + Vector2(28, panel_rect.size.y - 24),
+		"W / S 选择 · R 丢弃 · T 快速丢弃最低价值 · B / Esc 关闭",
+		HORIZONTAL_ALIGNMENT_CENTER,
+		panel_rect.size.x - 56,
+		16,
+		MAIN_MENU_STYLE.MUTED,
+	)
+
+
 func _draw_network_toolbelt() -> void:
 	var actor := _local_display_actor()
 	if actor.is_empty():
@@ -1926,6 +2141,21 @@ func _local_display_actor() -> Dictionary:
 	if display_actors.has(peer_id):
 		return display_actors[peer_id]
 	return {}
+
+
+func _sync_carrying_panel_state() -> void:
+	if not carrying_panel_open:
+		return
+	var carried_loot: Array = _local_display_actor().get("carried_loot", [])
+	if carried_loot.is_empty():
+		carrying_panel_open = false
+		selected_carried_loot = 0
+		return
+	selected_carried_loot = clampi(
+		selected_carried_loot,
+		0,
+		carried_loot.size() - 1,
+	)
 
 
 func _local_active_storage_furniture() -> Dictionary:

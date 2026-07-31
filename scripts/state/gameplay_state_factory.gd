@@ -45,6 +45,10 @@ static func actor(
 		"fatigue_until": 0.0,
 		"teleport_started": -1.0,
 		"teleport_ends": -1.0,
+		"carried_loot": [],
+		"carried_value": 0,
+		"carried_weight": 0,
+		"active_skill_ready_at": 0.0,
 		"last_voice_at": -10.0,
 		"hp": 2,
 		"moving": false,
@@ -118,4 +122,5 @@ static func device(
 		"collected": false,
 		"created": created_at,
 		"state": "active",
+		"source": "tool",
 	}

@@ -18,6 +18,8 @@ static func all() -> Array:
 			"收藏家",
 			"monster",
 			"看守宅邸与私人藏品的怪物职业。",
+			"collector_trap",
+			"trap_mastery",
 		),
 		PROFESSION_DEFINITION.create(
 			SCOUT,
@@ -36,6 +38,8 @@ static func all() -> Array:
 			"搬运者",
 			"thief",
 			"负责转移藏品并承担高风险运输的盗贼职业。",
+			"",
+			"load_training",
 		),
 	]
 

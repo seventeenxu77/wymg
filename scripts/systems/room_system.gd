@@ -95,6 +95,7 @@ func _generate_rooms() -> Array:
 					"kind": "trinket",
 					"label": TRINKETS[rng.randi_range(0, TRINKETS.size() - 1)],
 					"value": 1,
+					"weight": 1,
 				})
 			var base_durability := _furniture_durability(kind)
 			room["furniture"].append({

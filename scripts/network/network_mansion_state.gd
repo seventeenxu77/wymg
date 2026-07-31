@@ -6,6 +6,7 @@ const GAMEPLAY_STATE_FACTORY := preload("res://scripts/state/gameplay_state_fact
 const MANSION_COLLISION := preload("res://scripts/state/mansion_collision.gd")
 const GAME_STATE_BASE := preload("res://scripts/systems/game_state_base.gd")
 const NETWORK_TOOL_CATALOG := preload("res://scripts/network/network_tool_catalog.gd")
+const SKILL_CATALOG := preload("res://scripts/skills/skill_catalog.gd")
 
 const MAP_SIZE := 6
 const ROOM_SIZE := 5.0
@@ -60,6 +61,10 @@ const ROBOT_ALARM_SECONDS := GAME_STATE_BASE.ROBOT_ALARM_SECONDS
 const ROBOT_ALARM_COOLDOWN := GAME_STATE_BASE.ROBOT_ALARM_COOLDOWN
 const ROBOT_TURN_SECONDS := 1.4
 const TOOL_INVENTORY_RECORD_STRIDE := 5
+const WEIGHT_SPEED_PENALTY := 0.07
+const HAULER_WEIGHT_SPEED_PENALTY := 0.035
+const MIN_WEIGHT_SPEED := 0.55
+const HAULER_MIN_WEIGHT_SPEED := 0.75
 
 var world_seed := 0
 var rooms: Array = []
@@ -70,6 +75,7 @@ var noises: Array = []
 var pending_world_events: Array = []
 var next_noise_id := 1
 var next_device_id := 1
+var next_drop_id := 1
 var rng := RandomNumberGenerator.new()
 var phase := "hide"
 var seconds_left := HIDE_SECONDS
@@ -94,6 +100,7 @@ func initialize(seed_value: int, players: Dictionary) -> void:
 	pending_world_events.clear()
 	next_noise_id = 1
 	next_device_id = 1
+	next_drop_id = 1
 	phase = "hide"
 	seconds_left = HIDE_SECONDS
 	phase_clock = 0.0
@@ -336,13 +343,11 @@ func pick_up_item(peer_id: int) -> Dictionary:
 			return _rejected_event(peer_id, "怪物不能拾取财物。")
 		var carried_loot: Array = actor["carried_loot"]
 		carried_loot.append(item_copy)
-		actor["carried_value"] = (
-			int(actor.get("carried_value", 0))
-			+ int(nearest.get("value", 0))
-		)
-		message = "拾取了%s，当前携带价值 %d。" % [
+		_refresh_carried_totals(actor)
+		message = "拾取了%s，携带价值 %d，负重 %d。" % [
 			str(nearest.get("label", "财物")),
 			int(actor["carried_value"]),
+			int(actor["carried_weight"]),
 		]
 	else:
 		actor["pills"] = int(actor.get("pills", 0)) + 1
@@ -360,6 +365,109 @@ func pick_up_item(peer_id: int) -> Dictionary:
 		"actor": _tool_actor_mutation(peer_id, actor),
 		"message": message,
 	}
+
+
+func drop_carried_loot(peer_id: int, loot_id: String) -> Dictionary:
+	if not actors.has(peer_id):
+		return _rejected_event(peer_id, "玩家不在本局中。")
+	var actor: Dictionary = actors[peer_id]
+	var rejection := _loot_drop_rejection(actor)
+	if not rejection.is_empty():
+		return _rejected_event(peer_id, rejection)
+	var carried_loot: Array = actor.get("carried_loot", [])
+	var selected_index := -1
+	for index in range(carried_loot.size()):
+		if str((carried_loot[index] as Dictionary).get("id", "")) == loot_id:
+			selected_index = index
+			break
+	if selected_index < 0:
+		return _rejected_event(peer_id, "没有找到要丢弃的藏品。")
+	return _drop_carried_loot_at(peer_id, actor, selected_index)
+
+
+func quick_drop_lowest_loot(peer_id: int) -> Dictionary:
+	if not actors.has(peer_id):
+		return _rejected_event(peer_id, "玩家不在本局中。")
+	var actor: Dictionary = actors[peer_id]
+	var rejection := _loot_drop_rejection(actor)
+	if not rejection.is_empty():
+		return _rejected_event(peer_id, rejection)
+	var carried_loot: Array = actor.get("carried_loot", [])
+	var selected_index := -1
+	var selected_value := 1 << 30
+	var selected_weight := -1
+	for index in range(carried_loot.size()):
+		var loot: Dictionary = carried_loot[index]
+		var value := int(loot.get("value", 0))
+		var weight := loot_weight(loot)
+		if (
+			selected_index < 0
+			or value < selected_value
+			or (value == selected_value and weight > selected_weight)
+		):
+			selected_index = index
+			selected_value = value
+			selected_weight = weight
+	if selected_index < 0:
+		return _rejected_event(peer_id, "没有可以快速丢弃的藏品。")
+	return _drop_carried_loot_at(peer_id, actor, selected_index)
+
+
+func _drop_carried_loot_at(
+	peer_id: int,
+	actor: Dictionary,
+	selected_index: int,
+) -> Dictionary:
+	var carried_loot: Array = actor.get("carried_loot", [])
+	var carried_item: Dictionary = carried_loot[selected_index]
+	carried_loot.remove_at(selected_index)
+	_refresh_carried_totals(actor)
+	var dropped_item := carried_item.duplicate(true)
+	dropped_item["source_id"] = str(carried_item.get("id", ""))
+	dropped_item["id"] = "dropped-loot-%d" % next_drop_id
+	next_drop_id += 1
+	dropped_item["collected"] = false
+	dropped_item["pos"] = _device_position(actor, "thief", 0.28)
+	var room_coord: Vector2i = actor["room"]
+	room_at(room_coord)["items"].append(dropped_item)
+	_reveal_thief(actor)
+	actors[peer_id] = actor
+	_add_noise(peer_id, "丢弃藏品", 1.4)
+	return {
+		"accepted": true,
+		"kind": "item",
+		"item_action": "drop",
+		"requester_peer_id": peer_id,
+		"room": room_coord,
+		"dropped_item": dropped_item.duplicate(true),
+		"actor": _tool_actor_mutation(peer_id, actor),
+		"message": "丢弃了%s；当前负重 %d，速度 %.0f%%。"
+		% [
+			str(dropped_item.get("label", "藏品")),
+			int(actor.get("carried_weight", 0)),
+			burden_speed_multiplier(actor) * 100.0,
+		],
+	}
+
+
+func _loot_drop_rejection(actor: Dictionary) -> String:
+	if _role_for_slot(str(actor.get("slot", ""))) != "thief":
+		return "只有盗贼能够丢弃携带的藏品。"
+	if phase != "hunt":
+		return "狩猎开始后才能丢弃藏品。"
+	if bool(actor.get("extracted", false)):
+		return "你已经撤离宅邸。"
+	if bool(actor.get("downed", false)):
+		return "倒地状态无法丢弃藏品。"
+	if bool(actor.get("trapped", false)):
+		return "被捕兽夹困住时无法丢弃藏品。"
+	if elapsed < float(actor.get("hit_stun_until", 0.0)):
+		return "受击硬直中，暂时无法丢弃藏品。"
+	if float(actor.get("teleport_ends", -1.0)) > elapsed:
+		return "传送蓄力期间无法丢弃藏品。"
+	if (actor.get("carried_loot", []) as Array).is_empty():
+		return "当前没有携带藏品。"
+	return ""
 
 
 func extract_thief(peer_id: int) -> Dictionary:
@@ -387,6 +495,7 @@ func extract_thief(peer_id: int) -> Dictionary:
 	carried_loot.clear()
 	actor["extracted_value"] = int(actor.get("carried_value", 0))
 	actor["carried_value"] = 0
+	actor["carried_weight"] = 0
 	actor["extracted"] = true
 	actor["moving"] = false
 	actors[peer_id] = actor
@@ -743,6 +852,70 @@ func use_selected_tool(peer_id: int) -> Dictionary:
 	return _rejected_event(peer_id, "该道具尚未迁移到联机模式。")
 
 
+func use_active_skill(peer_id: int) -> Dictionary:
+	if not actors.has(peer_id):
+		return _rejected_event(peer_id, "玩家不在本局中。")
+	var actor: Dictionary = actors[peer_id]
+	if str(actor.get("profession_id", "")) != "collector":
+		return _rejected_event(peer_id, "当前职业没有可用的主动技能。")
+	if (
+		bool(actor.get("extracted", false))
+		or bool(actor.get("downed", false))
+		or bool(actor.get("trapped", false))
+		or elapsed < float(actor.get("hit_stun_until", 0.0))
+	):
+		return _rejected_event(peer_id, "当前状态无法使用职业技能。")
+	if phase == "ready":
+		return _rejected_event(peer_id, "准备倒计时中无法布置机关。")
+	var definition := SKILL_CATALOG.find(SKILL_CATALOG.COLLECTOR_TRAP)
+	if not definition:
+		return _rejected_event(peer_id, "收藏家技能定义不存在。")
+	var ready_at := float(actor.get("active_skill_ready_at", 0.0))
+	if elapsed < ready_at:
+		return _rejected_event(
+			peer_id,
+			"布置机关冷却中，还需 %.1f 秒。" % (ready_at - elapsed),
+		)
+	var devices: Array = []
+	var active_traps := _active_skill_traps(peer_id)
+	var maximum := int(definition.max_deployments)
+	if maximum > 0 and active_traps.size() >= maximum:
+		var replaceable_traps := active_traps.filter(func(trap: Dictionary) -> bool:
+			return int(trap.get("trapped_peer_id", 0)) == 0
+		)
+		if replaceable_traps.is_empty():
+			return _rejected_event(peer_id, "三个技能夹子都在困住目标，暂时无法替换。")
+		replaceable_traps.sort_custom(func(left: Dictionary, right: Dictionary) -> bool:
+			return float(left.get("created", 0.0)) < float(right.get("created", 0.0))
+		)
+		var oldest: Dictionary = replaceable_traps[0]
+		var oldest_entry := _find_device_entry(str(oldest.get("id", "")), true)
+		if not oldest_entry.is_empty():
+			oldest["collected"] = true
+			oldest["state"] = "replaced"
+			devices.append(_device_mutation(oldest_entry["room"], oldest))
+	var trap := _spawn_device(
+		peer_id,
+		actor,
+		"trap",
+		_device_position(actor, "monster", 0.5),
+	)
+	trap["source"] = "skill"
+	trap["skill_id"] = SKILL_CATALOG.COLLECTOR_TRAP
+	trap["armed_at"] = elapsed + TRAP_ARM_DELAY
+	actor["active_skill_ready_at"] = elapsed + float(definition.cooldown)
+	actors[peer_id] = actor
+	devices.append(_device_mutation(room_at(trap["room"]), trap))
+	return _skill_event(
+		peer_id,
+		SKILL_CATALOG.COLLECTOR_TRAP,
+		actor,
+		devices,
+		"已布置收藏家机关；%.0f 秒后可再次使用。"
+		% float(definition.cooldown),
+	)
+
+
 func escape_trap(peer_id: int, pressed_left: bool) -> Dictionary:
 	if not actors.has(peer_id):
 		return _rejected_event(peer_id, "玩家不在本局中。")
@@ -767,16 +940,21 @@ func escape_trap(peer_id: int, pressed_left: bool) -> Dictionary:
 		var found := _find_device_entry(device_id)
 		if not found.is_empty():
 			var trap: Dictionary = found["item"]
-			trap["state"] = "recoverable"
-			trap["tool_type"] = "trap"
 			trap["trapped_peer_id"] = 0
+			if str(trap.get("source", "tool")) == "skill":
+				trap["state"] = "spent"
+				trap["collected"] = true
+				message = "已挣脱收藏家的机关；夹子随即损毁。"
+			else:
+				trap["state"] = "recoverable"
+				trap["tool_type"] = "trap"
+				message = "已挣脱捕兽夹；夹子现在可以被任意玩家拾取。"
 			devices.append(_device_mutation(found["room"], trap))
 		actor["trapped"] = false
 		actor["trapped_by"] = ""
 		actor["trap_escape_progress"] = 0
 		actor["trap_expected_left"] = true
 		actor["trap_prompt"] = ""
-		message = "已挣脱捕兽夹；夹子现在可以被任意玩家拾取。"
 	actors[peer_id] = actor
 	return _tool_event(
 		peer_id,
@@ -964,7 +1142,7 @@ func apply_world_event(event: Dictionary) -> bool:
 		return _apply_noise_event(event)
 	if event_kind == "combat":
 		return true
-	if event_kind == "tool":
+	if event_kind in ["tool", "skill"]:
 		return _apply_tool_event(event)
 	if event_kind not in ["furniture", "item"]:
 		return false
@@ -978,6 +1156,19 @@ func apply_world_event(event: Dictionary) -> bool:
 		return false
 	var room := room_at(room_coord)
 	if event_kind == "item":
+		if str(event.get("item_action", "pickup")) == "drop":
+			var dropped_item: Dictionary = event.get("dropped_item", {})
+			if dropped_item.is_empty():
+				return false
+			if not _room_has_item(room, str(dropped_item.get("id", ""))):
+				room["items"].append(dropped_item.duplicate(true))
+			var drop_actor_mutation: Dictionary = event.get("actor", {})
+			if not drop_actor_mutation.is_empty():
+				_apply_tool_event({
+					"actor": drop_actor_mutation,
+					"devices": [],
+				})
+			return true
 		var item := _find_item(room, str(event.get("item_id", "")))
 		if item.is_empty():
 			return false
@@ -1074,6 +1265,10 @@ func snapshot() -> Dictionary:
 			1 if bool(actor.get("trap_expected_left", true)) else 0,
 			float(actor.get("teleport_started", -1.0)),
 			float(actor.get("teleport_ends", -1.0)),
+			float(actor.get("carried_weight", carried_weight(actor))),
+			_actor_speed_multiplier(actor),
+			float(actor.get("active_skill_ready_at", 0.0)),
+			float(_active_skill_traps(int(peer_id_variant)).size()),
 		])
 		var inventory_record := PackedFloat32Array([
 			float(actor.get("tool_selected", 0)),
@@ -1268,6 +1463,7 @@ func _complete_teleport_extraction(peer_id: int, actor: Dictionary) -> void:
 	carried_loot.clear()
 	actor["extracted_value"] = int(actor.get("carried_value", 0))
 	actor["carried_value"] = 0
+	actor["carried_weight"] = 0
 	actor["extracted"] = true
 	actor["moving"] = false
 	pending_world_events.append(_tool_event(
@@ -1328,6 +1524,11 @@ func _update_devices(delta: float) -> void:
 				for peer_id_variant in actors:
 					var peer_id := int(peer_id_variant)
 					var actor: Dictionary = actors[peer_id_variant]
+					if (
+						str(item.get("source", "tool")) == "skill"
+						and int(item.get("owner_peer_id", 0)) == peer_id
+					):
+						continue
 					if (
 						bool(actor.get("extracted", false))
 						or bool(actor.get("downed", false))
@@ -1498,6 +1699,24 @@ func _tool_event(
 	}
 
 
+func _skill_event(
+	requester_peer_id: int,
+	skill_id: String,
+	actor: Dictionary,
+	devices: Array,
+	message: String,
+) -> Dictionary:
+	return {
+		"accepted": true,
+		"kind": "skill",
+		"skill_action": skill_id,
+		"requester_peer_id": requester_peer_id,
+		"actor": _tool_actor_mutation(requester_peer_id, actor),
+		"devices": devices.duplicate(true),
+		"message": message,
+	}
+
+
 func _tool_actor_mutation(peer_id: int, actor: Dictionary) -> Dictionary:
 	return {
 		"peer_id": peer_id,
@@ -1515,7 +1734,9 @@ func _tool_actor_mutation(peer_id: int, actor: Dictionary) -> Dictionary:
 		"extracted": bool(actor.get("extracted", false)),
 		"extracted_value": int(actor.get("extracted_value", 0)),
 		"carried_value": int(actor.get("carried_value", 0)),
+		"carried_weight": int(actor.get("carried_weight", 0)),
 		"carried_loot": (actor.get("carried_loot", []) as Array).duplicate(true),
+		"active_skill_ready_at": float(actor.get("active_skill_ready_at", 0.0)),
 		"trapped": bool(actor.get("trapped", false)),
 		"trapped_by": str(actor.get("trapped_by", "")),
 		"trapped_started_at": float(actor.get("trapped_started_at", -10.0)),
@@ -1571,7 +1792,9 @@ func _apply_tool_actor_mutation(mutation: Dictionary) -> void:
 		"extracted",
 		"extracted_value",
 		"carried_value",
+		"carried_weight",
 		"carried_loot",
+		"active_skill_ready_at",
 		"trapped",
 		"trapped_by",
 		"trapped_started_at",
@@ -1915,12 +2138,54 @@ func _make_network_tool(tool_type: String, tool_id: String) -> Dictionary:
 	return NETWORK_TOOL_CATALOG.make_tool(tool_type, tool_id)
 
 
+static func loot_weight(item: Dictionary) -> int:
+	if item.has("weight"):
+		return maxi(int(item.get("weight", 1)), 1)
+	var value := int(item.get("value", 0))
+	if value >= 8:
+		return 3
+	if value >= 4:
+		return 2
+	return 1
+
+
+static func carried_weight(actor: Dictionary) -> int:
+	var total := 0
+	for loot_variant in actor.get("carried_loot", []):
+		total += loot_weight(loot_variant)
+	return total
+
+
+func burden_speed_multiplier(actor: Dictionary) -> float:
+	if _role_for_slot(str(actor.get("slot", ""))) != "thief":
+		return 1.0
+	var weight := int(actor.get("carried_weight", carried_weight(actor)))
+	if str(actor.get("profession_id", "")) == "hauler":
+		return maxf(
+			HAULER_MIN_WEIGHT_SPEED,
+			1.0 - float(weight) * HAULER_WEIGHT_SPEED_PENALTY,
+		)
+	return maxf(
+		MIN_WEIGHT_SPEED,
+		1.0 - float(weight) * WEIGHT_SPEED_PENALTY,
+	)
+
+
+func _refresh_carried_totals(actor: Dictionary) -> void:
+	var total_value := 0
+	for loot_variant in actor.get("carried_loot", []):
+		total_value += int((loot_variant as Dictionary).get("value", 0))
+	actor["carried_value"] = total_value
+	actor["carried_weight"] = carried_weight(actor)
+
+
 func _actor_speed_multiplier(actor: Dictionary) -> float:
+	var status_multiplier := 1.0
 	if elapsed < float(actor.get("adrenaline_until", 0.0)):
-		return 2.0
-	if elapsed < float(actor.get("fatigue_until", 0.0)):
-		return 0.5
-	return 1.0
+		status_multiplier = 2.0
+	elif elapsed < float(actor.get("fatigue_until", 0.0)):
+		status_multiplier = 0.5
+	return burden_speed_multiplier(actor) * status_multiplier
 
 
 func _reveal_if_thief(actor: Dictionary) -> void:
@@ -1962,6 +2227,23 @@ func _find_device_entry(device_id: String, include_collected := false) -> Dictio
 			):
 				return {"room": room, "item": item}
 	return {}
+
+
+func _active_skill_traps(owner_peer_id: int) -> Array:
+	var result: Array = []
+	for room_variant in rooms:
+		var room: Dictionary = room_variant
+		for item_variant in room["items"]:
+			var item: Dictionary = item_variant
+			if (
+				not bool(item.get("collected", false))
+				and str(item.get("device_type", "")) == "trap"
+				and str(item.get("source", "tool")) == "skill"
+				and str(item.get("skill_id", "")) == SKILL_CATALOG.COLLECTOR_TRAP
+				and int(item.get("owner_peer_id", 0)) == owner_peer_id
+			):
+				result.append(item)
+	return result
 
 
 func _add_noise_at(
@@ -2269,6 +2551,8 @@ func _make_actor(peer_id: int, player: Dictionary) -> Dictionary:
 	actor["profession_id"] = str(player.get("profession_id", ""))
 	actor["carried_loot"] = []
 	actor["carried_value"] = 0
+	actor["carried_weight"] = 0
+	actor["active_skill_ready_at"] = 0.0
 	actor["pills"] = 0
 	actor["extracted"] = false
 	actor["extracted_value"] = 0

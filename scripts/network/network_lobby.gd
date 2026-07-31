@@ -13,8 +13,11 @@ const PROFESSION_CATALOG := preload(
 const GAME_STATE_BASE := preload("res://scripts/systems/game_state_base.gd")
 const MAIN_MENU_STYLE := preload("res://scripts/presentation/main_menu_overlay_style.gd")
 const UI_FONT: Font = preload("res://assets/fonts/MaShanZheng-Regular.ttf")
-const VIEWPORT_FRAME_TEXTURE: Texture2D = preload(
-	"res://assets/ui/viewport_frame_handdrawn.png"
+const INVENTORY_TRAY_TEXTURE: Texture2D = preload(
+	"res://assets/ui/inventory_tray.png"
+)
+const INVENTORY_SLOT_TEXTURE: Texture2D = preload(
+	"res://assets/ui/inventory_slot.png"
 )
 const ADRENALINE_ICON: Texture2D = preload(
 	"res://assets/ui/icons/adrenaline.png"
@@ -37,7 +40,8 @@ var start_button: Button
 var auto_ready_requested := false
 var auto_ready_sent := false
 var syncing_profession_option := false
-var toolbelt_frame_style: StyleBoxTexture
+var toolbelt_tray_style: StyleBoxTexture
+var toolbelt_slot_style: StyleBoxTexture
 
 
 func _ready() -> void:
@@ -45,7 +49,16 @@ func _ready() -> void:
 	theme = Theme.new()
 	theme.default_font = UI_FONT
 	theme.default_font_size = 20
-	toolbelt_frame_style = _make_toolbelt_frame_style()
+	toolbelt_tray_style = _make_texture_style(
+		INVENTORY_TRAY_TEXTURE,
+		72.0,
+		32.0,
+	)
+	toolbelt_slot_style = _make_texture_style(
+		INVENTORY_SLOT_TEXTURE,
+		0.0,
+		0.0,
+	)
 	session = NETWORK_SESSION_SCRIPT.new()
 	session.name = "NetworkSession"
 	add_child(session)
@@ -206,9 +219,13 @@ func _build_profession_picker(parent: Container) -> void:
 	row.add_child(label)
 
 	profession_option = OptionButton.new()
-	profession_option.custom_minimum_size = Vector2(300, 44)
+	profession_option.custom_minimum_size = Vector2(330, 48)
+	profession_option.alignment = HORIZONTAL_ALIGNMENT_CENTER
+	profession_option.clip_text = true
+	profession_option.add_theme_constant_override("arrow_margin", 18)
 	profession_option.item_selected.connect(_on_profession_selected)
 	MAIN_MENU_STYLE.apply_button(profession_option)
+	_expand_profession_button_content()
 	row.add_child(profession_option)
 
 
@@ -244,51 +261,48 @@ func _add_button(parent: Container, label_text: String, callback: Callable) -> B
 
 
 func _build_toolbelt(parent: Container) -> void:
-	var tray := PanelContainer.new()
-	tray.name = "LoadoutToolbelt"
-	tray.custom_minimum_size = Vector2(0, 112)
-	tray.add_theme_stylebox_override("panel", toolbelt_frame_style)
-	parent.add_child(tray)
-
-	var tray_margin := MarginContainer.new()
-	tray_margin.add_theme_constant_override("margin_left", 20)
-	tray_margin.add_theme_constant_override("margin_top", 10)
-	tray_margin.add_theme_constant_override("margin_right", 20)
-	tray_margin.add_theme_constant_override("margin_bottom", 12)
-	tray.add_child(tray_margin)
-
-	var tray_content := VBoxContainer.new()
-	tray_content.add_theme_constant_override("separation", 2)
-	tray_margin.add_child(tray_content)
 	var title := Label.new()
 	title.text = "背包"
 	title.add_theme_font_size_override("font_size", 17)
 	title.add_theme_color_override("font_color", Color("#c5b79e"))
-	tray_content.add_child(title)
+	parent.add_child(title)
+
+	var tray := PanelContainer.new()
+	tray.name = "LoadoutToolbelt"
+	tray.custom_minimum_size = Vector2(0, 76)
+	tray.add_theme_stylebox_override("panel", toolbelt_tray_style)
+	parent.add_child(tray)
+
+	var tray_margin := MarginContainer.new()
+	tray_margin.add_theme_constant_override("margin_left", 54)
+	tray_margin.add_theme_constant_override("margin_top", 7)
+	tray_margin.add_theme_constant_override("margin_right", 54)
+	tray_margin.add_theme_constant_override("margin_bottom", 7)
+	tray.add_child(tray_margin)
 
 	var slots := HBoxContainer.new()
 	slots.add_theme_constant_override("separation", 6)
-	tray_content.add_child(slots)
+	tray_margin.add_child(slots)
 	for index in range(NETWORK_TOOL_CATALOG.MAX_LOADOUT_SIZE):
 		var slot := PanelContainer.new()
 		slot.name = "ToolSlot%d" % (index + 1)
 		slot.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		slot.custom_minimum_size = Vector2(0, 62)
-		slot.add_theme_stylebox_override("panel", toolbelt_frame_style)
+		slot.add_theme_stylebox_override("panel", toolbelt_slot_style)
 		slots.add_child(slot)
 
 		var slot_margin := MarginContainer.new()
-		slot_margin.add_theme_constant_override("margin_left", 10)
-		slot_margin.add_theme_constant_override("margin_top", 6)
-		slot_margin.add_theme_constant_override("margin_right", 10)
-		slot_margin.add_theme_constant_override("margin_bottom", 6)
+		slot_margin.add_theme_constant_override("margin_left", 58)
+		slot_margin.add_theme_constant_override("margin_top", 9)
+		slot_margin.add_theme_constant_override("margin_right", 28)
+		slot_margin.add_theme_constant_override("margin_bottom", 9)
 		slot.add_child(slot_margin)
 		var slot_content := HBoxContainer.new()
 		slot_content.add_theme_constant_override("separation", 8)
 		slot_margin.add_child(slot_content)
 
 		var icon := TextureRect.new()
-		icon.custom_minimum_size = Vector2(46, 46)
+		icon.custom_minimum_size = Vector2(38, 38)
 		icon.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
 		icon.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
 		icon.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -305,18 +319,35 @@ func _build_toolbelt(parent: Container) -> void:
 		loadout_slot_labels.append(label)
 
 
-func _make_toolbelt_frame_style() -> StyleBoxTexture:
+func _make_texture_style(
+	texture: Texture2D,
+	horizontal_margin: float,
+	vertical_margin: float,
+) -> StyleBoxTexture:
 	var style := StyleBoxTexture.new()
-	style.texture = VIEWPORT_FRAME_TEXTURE
-	style.texture_margin_left = 74
-	style.texture_margin_top = 68
-	style.texture_margin_right = 74
-	style.texture_margin_bottom = 68
+	style.texture = texture
+	style.texture_margin_left = horizontal_margin
+	style.texture_margin_top = vertical_margin
+	style.texture_margin_right = horizontal_margin
+	style.texture_margin_bottom = vertical_margin
 	style.content_margin_left = 0
 	style.content_margin_top = 0
 	style.content_margin_right = 0
 	style.content_margin_bottom = 0
 	return style
+
+
+func _expand_profession_button_content() -> void:
+	for state_name in ["normal", "hover", "pressed", "focus", "disabled"]:
+		var current := profession_option.get_theme_stylebox(state_name)
+		if not current:
+			continue
+		var style := current.duplicate()
+		style.content_margin_left = 46
+		style.content_margin_right = 54
+		style.content_margin_top = 7
+		style.content_margin_bottom = 7
+		profession_option.add_theme_stylebox_override(state_name, style)
 
 
 func _on_host_pressed() -> void:

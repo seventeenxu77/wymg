@@ -91,6 +91,7 @@ const TREASURES := [
 		"kind": "treasure",
 		"label": "银制烛台",
 		"value": 4,
+		"weight": 2,
 		"description": "沾着凝固烛泪的旧银烛台，仍映着宅邸过去的微光。",
 	},
 	{
@@ -98,6 +99,7 @@ const TREASURES := [
 		"kind": "treasure",
 		"label": "祖母绿胸针",
 		"value": 6,
+		"weight": 2,
 		"description": "镶嵌祖母绿的古老胸针，宝石深处浮动着幽绿色泽。",
 	},
 	{
@@ -105,13 +107,20 @@ const TREASURES := [
 		"kind": "treasure",
 		"label": "怪物之心",
 		"value": 10,
+		"weight": 3,
 		"description": "离开身体后仍在搏动的异形心脏，是宅邸中最危险的珍藏。",
 	},
 ]
 
 const TRINKETS := ["旧怀表", "银汤匙", "铜制烟盒", "珍珠纽扣"]
 const WILD_TREASURE_COUNT := 10
-const WILD_TREASURE := {"id": "treasure-1", "kind": "treasure", "label": "古钱币", "value": 2}
+const WILD_TREASURE := {
+	"id": "treasure-1",
+	"kind": "treasure",
+	"label": "古钱币",
+	"value": 2,
+	"weight": 1,
+}
 
 const TOOL_DEFS := {
 	"detector": {
