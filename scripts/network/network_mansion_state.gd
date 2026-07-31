@@ -114,6 +114,7 @@ func sync_players(players: Dictionary) -> void:
 			var existing: Dictionary = actors[peer_id]
 			existing["name"] = str(player.get("name", "玩家"))
 			existing["slot"] = slot
+			existing["profession_id"] = str(player.get("profession_id", ""))
 			actors[peer_id] = existing
 			continue
 		actors[peer_id] = _make_actor(peer_id, player)
@@ -2265,6 +2266,7 @@ func _make_actor(peer_id: int, player: Dictionary) -> Dictionary:
 	actor["peer_id"] = peer_id
 	actor["name"] = str(player.get("name", "玩家"))
 	actor["slot"] = slot
+	actor["profession_id"] = str(player.get("profession_id", ""))
 	actor["carried_loot"] = []
 	actor["carried_value"] = 0
 	actor["pills"] = 0
@@ -2280,12 +2282,19 @@ func _make_actor(peer_id: int, player: Dictionary) -> Dictionary:
 	actor["being_revived"] = false
 	actor["tools"] = []
 	actor["tool_selected"] = 0
-	if debug_tool_loadouts:
+	var equipped_tool_types: Array = (
+		NETWORK_TOOL_CATALOG.test_loadout_for_slot(slot)
+		if debug_tool_loadouts
+		else player.get("loadout", [])
+	)
+	if NETWORK_TOOL_CATALOG.is_valid_loadout(equipped_tool_types, slot):
 		var tool_serial := 0
-		for tool_type in NETWORK_TOOL_CATALOG.test_loadout_for_slot(slot):
+		for tool_type_variant in equipped_tool_types:
+			var tool_type := str(tool_type_variant)
 			(actor["tools"] as Array).append(_make_network_tool(
 				tool_type,
-				"debug-tool-%s-%d" % [slot, tool_serial],
+				"equipped-tool-%d-%d-%s"
+				% [peer_id, tool_serial, tool_type],
 			))
 			tool_serial += 1
 	return actor

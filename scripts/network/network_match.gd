@@ -7,12 +7,18 @@ const MAIN_MENU_STYLE := preload("res://scripts/presentation/main_menu_overlay_s
 const NETWORK_LAUNCH_OPTIONS := preload("res://scripts/network/network_launch_options.gd")
 const NETWORK_MANSION_STATE_SCRIPT := preload("res://scripts/network/network_mansion_state.gd")
 const NETWORK_TOOL_CATALOG := preload("res://scripts/network/network_tool_catalog.gd")
+const PROFESSION_CATALOG := preload(
+	"res://scripts/professions/profession_catalog.gd"
+)
 const WORLD_25D_SCRIPT := preload("res://scripts/world_25d.gd")
 const GAME_STATE_BASE := preload("res://scripts/systems/game_state_base.gd")
 const UI_FONT: Font = preload("res://assets/fonts/MaShanZheng-Regular.ttf")
 const MODAL_PANEL_TEXTURE: Texture2D = preload("res://assets/ui/modal_panel.png")
 const HEADER_PLAQUE_TEXTURE: Texture2D = preload("res://assets/ui/header_plaque.png")
 const INVENTORY_SLOT_TEXTURE: Texture2D = preload("res://assets/ui/inventory_slot.png")
+const VIEWPORT_FRAME_TEXTURE: Texture2D = preload(
+	"res://assets/ui/viewport_frame_handdrawn.png"
+)
 const ALARM_ICON_TEXTURE: Texture2D = preload("res://assets/ui/icons/alarm.png")
 const TOOL_ICON_TEXTURES := {
 	"adrenaline": preload("res://assets/ui/icons/adrenaline.png"),
@@ -39,6 +45,8 @@ const INPUT_INTERVAL := 1.0 / 30.0
 const INTERPOLATION_SPEED := 14.0
 const AFTERIMAGE_SAMPLE_INTERVAL := 0.16
 const RESOURCE_WARMUP_FRAMES := 2
+const MONSTER_COLOR := Color("#ff6b4a")
+const THIEF_COLOR := Color("#66d9c3")
 
 var session: NetworkSession
 var mansion_state: NetworkMansionState
@@ -91,6 +99,8 @@ var leave_button: Button
 var modal_panel_style: StyleBoxTexture
 var header_plaque_style: StyleBoxTexture
 var inventory_slot_style: StyleBoxTexture
+var toolbelt_tray_style: StyleBoxTexture
+var toolbelt_slot_style: StyleBoxTexture
 
 
 func _ready() -> void:
@@ -102,6 +112,16 @@ func _ready() -> void:
 	modal_panel_style = _make_texture_style(MODAL_PANEL_TEXTURE, 66.0, 56.0)
 	header_plaque_style = _make_texture_style(HEADER_PLAQUE_TEXTURE, 58.0, 30.0)
 	inventory_slot_style = _make_texture_style(INVENTORY_SLOT_TEXTURE, 42.0, 26.0)
+	toolbelt_tray_style = _make_texture_style(
+		VIEWPORT_FRAME_TEXTURE,
+		74.0,
+		68.0,
+	)
+	toolbelt_slot_style = _make_texture_style(
+		VIEWPORT_FRAME_TEXTURE,
+		74.0,
+		68.0,
+	)
 	var launch_options := NETWORK_LAUNCH_OPTIONS.parse(OS.get_cmdline_user_args())
 	debug_input = str(launch_options.get("debug_input", ""))
 	debug_skip_hide = bool(launch_options.get("debug_skip_hide", false))
@@ -675,8 +695,6 @@ func _activate_live_match(seed_value: int) -> void:
 		return
 	pending_live_start = false
 	match_live = true
-	if instructions_label:
-		instructions_label.show()
 	print(
 		"[NetworkMatch][%s] all players ready; live match started seed=%d"
 		% [session.local_name, world_seed]
@@ -1325,23 +1343,6 @@ func _build_ui() -> void:
 	detail_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	add_child(detail_label)
 
-	instructions_label = Label.new()
-	instructions_label.set_anchors_preset(Control.PRESET_BOTTOM_WIDE)
-	instructions_label.offset_left = 360
-	instructions_label.offset_top = -220
-	instructions_label.offset_right = -360
-	instructions_label.offset_bottom = -168
-	instructions_label.text = (
-		"WASD / 方向键移动　·　Q / E 旋转视角　·　G 交互家具\n"
-		+ "Z / X 选择道具、C 使用　·　怪物：Space 横扫、H 开始狩猎　·　"
-		+ "盗贼：G 破坏、R 拾取、F 按住救援、入口按 V 撤离"
-	)
-	instructions_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	instructions_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-	instructions_label.add_theme_color_override("font_color", MAIN_MENU_STYLE.MUTED)
-	instructions_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	add_child(instructions_label)
-
 	leave_button = Button.new()
 	leave_button.text = "离开对局"
 	leave_button.custom_minimum_size = Vector2(220, 48)
@@ -1370,16 +1371,12 @@ func _refresh_status() -> void:
 		return
 	var local_entry: Dictionary = player_snapshot.get(session.local_peer_id(), {})
 	var phase_text := _phase_label()
-	status_label.text = "%s · %s" % [
+	status_label.text = "%s · %s · %s" % [
 		_slot_label(str(local_entry.get("slot", "spectator"))),
+		_profession_title(str(local_entry.get("profession_id", ""))),
 		phase_text,
 	]
-	detail_label.text = (
-		"正在生成宅邸……"
-		if not world_initialized
-		else "服务器权威宅邸 · %d 个房间 · %d 名玩家"
-		% [mansion_state.rooms.size(), player_snapshot.size()]
-	)
+	detail_label.text = ""
 
 
 func _draw() -> void:
@@ -1397,7 +1394,7 @@ func _draw() -> void:
 			draw_texture_rect(texture, world_rect, false)
 	_draw_noise_waves()
 	draw_rect(
-		Rect2(Vector2(size.x * 0.30, 98), Vector2(size.x * 0.40, 94)),
+		Rect2(Vector2(size.x * 0.30, 98), Vector2(size.x * 0.40, 58)),
 		Color(0.015, 0.018, 0.015, 0.76),
 	)
 	_draw_player_roster()
@@ -1454,8 +1451,9 @@ func _draw_loading_screen() -> void:
 		draw_string(
 			UI_FONT,
 			row_rect.position + Vector2(18, 30),
-			"%s　%s" % [
+			"%s · %s　%s" % [
 				_slot_label(str(player.get("slot", "spectator"))),
+				_profession_title(str(player.get("profession_id", ""))),
 				str(player.get("name", "玩家")),
 			],
 			HORIZONTAL_ALIGNMENT_LEFT,
@@ -1739,8 +1737,8 @@ func _draw_carry_status() -> void:
 	if actor.is_empty():
 		return
 	var status_rect := Rect2(
-		Vector2(110, size.y - 300),
-		Vector2(420, 92),
+		Vector2(110, size.y - 264),
+		Vector2(420, 56),
 	)
 	draw_style_box(MAIN_MENU_STYLE.panel_style(), status_rect)
 	if _local_role() == "monster":
@@ -1760,15 +1758,6 @@ func _draw_carry_status() -> void:
 			status_rect.size.x - 36,
 			20,
 			MAIN_MENU_STYLE.GOLD if cooldown <= 0.0 else MAIN_MENU_STYLE.MUTED,
-		)
-		draw_string(
-			UI_FONT,
-			status_rect.position + Vector2(18, 67),
-			"Space 发动前方横扫 · 可同时命中多名盗贼",
-			HORIZONTAL_ALIGNMENT_LEFT,
-			status_rect.size.x - 36,
-			16,
-			MAIN_MENU_STYLE.MUTED,
 		)
 		return
 	var extracted := bool(actor.get("extracted", false))
@@ -1802,75 +1791,82 @@ func _draw_carry_status() -> void:
 		else _local_accent() if hidden
 		else MAIN_MENU_STYLE.TEXT,
 	)
-	var rescue_progress := float(actor.get("rescue_progress", 0.0))
-	draw_string(
-		UI_FONT,
-		status_rect.position + Vector2(18, 67),
-		(
-			"本局继续进行，可观察其他玩家。"
-			if extracted
-			else "队友正在救援 %.1f / %.1f 秒"
-			% [rescue_progress, NETWORK_MANSION_STATE_SCRIPT.REVIVE_SECONDS]
-			if downed and bool(actor.get("being_revived", false))
-			else "等待队友靠近并按住 F 救援"
-			if downed
-			else "保持静止进入潜行 · 移动或交互会暴露"
-		),
-		HORIZONTAL_ALIGNMENT_LEFT,
-		status_rect.size.x - 36,
-		16,
-		MAIN_MENU_STYLE.MUTED,
-	)
-
-
 func _draw_network_toolbelt() -> void:
 	var actor := _local_display_actor()
 	if actor.is_empty():
 		return
 	var tools: Array = actor.get("tools", [])
 	var slot_count := NETWORK_MANSION_STATE_SCRIPT.TOOL_INVENTORY_CAPACITY
-	var slot_size := Vector2(62, 62)
-	var gap := 8.0
-	var tray_size := Vector2(
-		slot_count * slot_size.x + (slot_count - 1) * gap + 24,
-		94,
-	)
+	var tray_size := Vector2(600, 126)
 	var tray := Rect2(
-		Vector2((size.x - tray_size.x) * 0.5, size.y - tray_size.y - 18),
+		Vector2((size.x - tray_size.x) * 0.5, size.y - tray_size.y - 130),
 		tray_size,
 	)
-	draw_style_box(MAIN_MENU_STYLE.panel_style(), tray)
+	draw_style_box(toolbelt_tray_style, tray)
+	draw_string(
+		UI_FONT,
+		tray.position + Vector2(22, 20),
+		"背包",
+		HORIZONTAL_ALIGNMENT_LEFT,
+		tray.size.x - 44,
+		15,
+		Color("#c5b79e"),
+	)
+	var gap := 6.0
+	var slot_start := tray.position + Vector2(18, 27)
+	var slot_size := Vector2(
+		(tray.size.x - 36.0 - gap * 2.0) / 3.0,
+		68,
+	)
 	var selected := int(actor.get("tool_selected", 0))
 	for index in range(slot_count):
 		var slot := Rect2(
-			tray.position + Vector2(12 + index * (slot_size.x + gap), 10),
+			slot_start + Vector2(index * (slot_size.x + gap), 0),
 			slot_size,
 		)
-		draw_style_box(inventory_slot_style, slot)
+		draw_style_box(toolbelt_slot_style, slot)
 		if index == selected and index < tools.size():
-			draw_rect(slot.grow(-3.0), MAIN_MENU_STYLE.GOLD, false, 2.0)
+			draw_rect(slot.grow(-5.0), _local_accent(), false, 1.8)
 		if index >= tools.size():
+			draw_string(
+				UI_FONT,
+				slot.position + Vector2(8, 38),
+				"%d · 空" % (index + 1),
+				HORIZONTAL_ALIGNMENT_CENTER,
+				slot.size.x - 16,
+				15,
+				MAIN_MENU_STYLE.MUTED,
+			)
 			continue
 		var tool: Dictionary = tools[index]
 		var tool_type := str(tool.get("tool_type", ""))
 		var icon: Texture2D = TOOL_ICON_TEXTURES.get(tool_type)
+		var icon_size := minf(slot.size.y - 14.0, 46.0)
+		var icon_rect := Rect2(
+			slot.position + Vector2(10, (slot.size.y - icon_size) * 0.5),
+			Vector2.ONE * icon_size,
+		)
 		if icon:
-			draw_texture_rect(icon, slot.grow(-11.0), false)
+			draw_texture_rect(icon, icon_rect, false)
 		draw_string(
 			UI_FONT,
-			slot.position + Vector2(4, slot.size.y - 5),
-			str(GAME_STATE_BASE.TOOL_DEFS.get(tool_type, {}).get("short", "")),
+			Vector2(icon_rect.end.x + 4, slot.position.y + 39),
+			"%d · %s" % [
+				index + 1,
+				str(GAME_STATE_BASE.TOOL_DEFS.get(tool_type, {}).get(
+					"short",
+					"",
+				)),
+			],
 			HORIZONTAL_ALIGNMENT_CENTER,
-			slot.size.x - 8,
-			13,
+			slot.end.x - icon_rect.end.x - 12,
+			15,
 			MAIN_MENU_STYLE.TEXT,
 		)
-	var selected_name := "空"
 	var selected_tool: Dictionary = {}
 	if not tools.is_empty() and selected < tools.size():
 		selected_tool = tools[selected]
-		selected_name = str(selected_tool.get("label", "道具"))
-	var hint := "Z / X 选择 · C 使用 · %s" % selected_name
+	var hint := ""
 	if bool(actor.get("trapped", false)):
 		hint = "捕兽夹 %d / %d · 下一键 %s" % [
 			int(actor.get("trap_escape_progress", 0)),
@@ -1907,17 +1903,18 @@ func _draw_network_toolbelt() -> void:
 			if robot_stun > 0.0
 			else "巡夜偶工作中 · C 换位"
 		)
-	draw_string(
-		UI_FONT,
-		tray.position + Vector2(10, tray.size.y - 8),
-		hint,
-		HORIZONTAL_ALIGNMENT_CENTER,
-		tray.size.x - 20,
-		14,
-		MAIN_MENU_STYLE.GOLD
-		if bool(actor.get("trapped", false))
-		else MAIN_MENU_STYLE.MUTED,
-	)
+	if not hint.is_empty():
+		draw_string(
+			UI_FONT,
+			tray.position + Vector2(10, tray.size.y - 8),
+			hint,
+			HORIZONTAL_ALIGNMENT_CENTER,
+			tray.size.x - 20,
+			14,
+			MAIN_MENU_STYLE.GOLD
+			if bool(actor.get("trapped", false))
+			else MAIN_MENU_STYLE.MUTED,
+		)
 
 
 func _local_display_actor() -> Dictionary:
@@ -1954,7 +1951,7 @@ func _furniture_contains(furniture: Dictionary, content_id: String) -> bool:
 func _draw_player_roster() -> void:
 	var ids := player_snapshot.keys()
 	ids.sort()
-	var roster_rect := Rect2(Vector2(size.x - 350, 100), Vector2(275, 174))
+	var roster_rect := Rect2(Vector2(size.x - 415, 100), Vector2(340, 174))
 	draw_style_box(MAIN_MENU_STYLE.panel_style(), roster_rect)
 	var y := roster_rect.position.y + 35
 	for peer_id_variant in ids:
@@ -1962,9 +1959,10 @@ func _draw_player_roster() -> void:
 		var player: Dictionary = player_snapshot[peer_id_variant]
 		var slot := str(player.get("slot", "spectator"))
 		var local_marker := "▶ " if session and peer_id == session.local_peer_id() else "　"
-		var text := "%s%s　%s" % [
+		var text := "%s%s·%s　%s" % [
 			local_marker,
 			_slot_label(slot),
+			_profession_title(str(player.get("profession_id", ""))),
 			str(player.get("name", "玩家")),
 		]
 		var actor: Dictionary = target_actors.get(peer_id, {})
@@ -2280,7 +2278,7 @@ func _local_role() -> String:
 
 
 func _local_accent() -> Color:
-	return Color("#ad493d") if _local_role() == "monster" else Color("#52a89c")
+	return MONSTER_COLOR if _local_role() == "monster" else THIEF_COLOR
 
 
 func _logical_global_position(room: Vector2i, position: Vector2) -> Vector2:
@@ -2303,3 +2301,7 @@ func _slot_label(slot: String) -> String:
 		"thief-2": return "盗贼 2"
 		"thief-3": return "盗贼 3"
 	return "观战"
+
+
+func _profession_title(profession_id: String) -> String:
+	return PROFESSION_CATALOG.title_for(profession_id)

@@ -1,6 +1,13 @@
 class_name NetworkSession
 extends Node
 
+const NETWORK_TOOL_CATALOG := preload(
+	"res://scripts/network/network_tool_catalog.gd"
+)
+const PROFESSION_CATALOG := preload(
+	"res://scripts/professions/profession_catalog.gd"
+)
+
 signal state_changed(state: int, message: String)
 signal players_changed(players: Dictionary)
 signal match_started(players: Dictionary)
@@ -15,6 +22,7 @@ enum State {
 }
 
 const PLAYER_SLOTS := ["monster", "thief-1", "thief-2", "thief-3"]
+const STARTER_LOADOUT := ["adrenaline"]
 
 var state := State.OFFLINE
 var status_message := "尚未连接。"
@@ -117,14 +125,35 @@ func local_peer_id() -> int:
 	return multiplayer.get_unique_id() if is_online() else 0
 
 
-func set_local_ready(ready: bool) -> void:
+func set_local_ready(ready: bool) -> bool:
 	if not is_online() or match_running:
-		return
+		return false
 	var peer_id := local_peer_id()
 	if is_server():
-		_set_player_ready(peer_id, ready)
+		return _set_player_ready(peer_id, ready)
 	else:
 		_request_ready.rpc_id(1, ready)
+	return true
+
+
+func set_local_profession(profession_id: String) -> bool:
+	if not is_online() or match_running:
+		return false
+	var peer_id := local_peer_id()
+	if is_server():
+		return _set_player_profession(peer_id, profession_id)
+	var entry: Dictionary = players.get(peer_id, {})
+	if (
+		entry.is_empty()
+		or bool(entry.get("ready", false))
+		or not PROFESSION_CATALOG.is_allowed(
+			profession_id,
+			str(entry.get("slot", "")),
+		)
+	):
+		return false
+	_request_profession.rpc_id(1, profession_id)
+	return true
 
 
 func can_start_match(require_full_roster := false) -> bool:
@@ -135,7 +164,19 @@ func can_start_match(require_full_roster := false) -> bool:
 		return false
 	for entry_variant in players.values():
 		var entry: Dictionary = entry_variant
-		if str(entry.get("slot", "")) == "spectator" or not bool(entry.get("ready", false)):
+		var slot := str(entry.get("slot", ""))
+		if (
+			slot == "spectator"
+			or not bool(entry.get("ready", false))
+			or not PROFESSION_CATALOG.is_allowed(
+				str(entry.get("profession_id", "")),
+				slot,
+			)
+			or not NETWORK_TOOL_CATALOG.is_valid_loadout(
+				entry.get("loadout", []),
+				slot,
+			)
+		):
 			return false
 	return true
 
@@ -217,6 +258,13 @@ func _request_ready(ready: bool) -> void:
 	_set_player_ready(multiplayer.get_remote_sender_id(), ready)
 
 
+@rpc("any_peer", "call_remote", "reliable")
+func _request_profession(profession_id: String) -> void:
+	if not multiplayer.is_server() or match_running:
+		return
+	_set_player_profession(multiplayer.get_remote_sender_id(), profession_id)
+
+
 @rpc("authority", "call_remote", "reliable")
 func _receive_players(snapshot: Dictionary) -> void:
 	players = snapshot.duplicate(true)
@@ -244,10 +292,27 @@ func _emit_players() -> void:
 	players_changed.emit(players.duplicate(true))
 
 
-func _set_player_ready(peer_id: int, ready: bool) -> void:
+func _set_player_ready(peer_id: int, ready: bool) -> bool:
 	if not players.has(peer_id):
-		return
+		return false
 	var entry: Dictionary = (players[peer_id] as Dictionary).duplicate(true)
+	var slot := str(entry.get("slot", ""))
+	if (
+		ready
+		and not PROFESSION_CATALOG.is_allowed(
+			str(entry.get("profession_id", "")),
+			slot,
+		)
+	):
+		return false
+	if (
+		ready
+		and not NETWORK_TOOL_CATALOG.is_valid_loadout(
+			entry.get("loadout", []),
+			slot,
+		)
+	):
+		return false
 	entry["ready"] = ready
 	players[peer_id] = entry
 	_set_state(
@@ -259,6 +324,25 @@ func _set_player_ready(peer_id: int, ready: bool) -> void:
 		],
 	)
 	_broadcast_players()
+	return true
+
+
+func _set_player_profession(peer_id: int, profession_id: String) -> bool:
+	if not players.has(peer_id) or match_running:
+		return false
+	var entry: Dictionary = (players[peer_id] as Dictionary).duplicate(true)
+	if (
+		bool(entry.get("ready", false))
+		or not PROFESSION_CATALOG.is_allowed(
+			profession_id,
+			str(entry.get("slot", "")),
+		)
+	):
+		return false
+	entry["profession_id"] = profession_id
+	players[peer_id] = entry
+	_broadcast_players()
+	return true
 
 
 func _try_auto_start() -> void:
@@ -283,7 +367,9 @@ func _make_player_entry(id: int, player_name: String, slot: String) -> Dictionar
 		"peer_id": id,
 		"name": player_name,
 		"slot": slot,
+		"profession_id": PROFESSION_CATALOG.default_for_slot(slot),
 		"ready": false,
+		"loadout": STARTER_LOADOUT.duplicate(),
 	}
 
 

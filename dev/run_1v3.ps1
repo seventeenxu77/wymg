@@ -3,7 +3,8 @@ param(
     [switch]$AutoMove,
     [switch]$SkipHide,
     [switch]$CombatTest,
-    [switch]$ToolTest
+    [switch]$ToolTest,
+    [switch]$ManualLobby
 )
 
 $ErrorActionPreference = 'Stop'
@@ -84,9 +85,11 @@ foreach ($client in $clients) {
         "--port=$Port",
         "--instance=$($client.Instance)",
         "--slot=$($client.Slot)",
-        "--name=$($client.Name)",
-        '--auto-ready'
+        "--name=$($client.Name)"
     )
+    if (-not $ManualLobby) {
+        $arguments += '--auto-ready'
+    }
     if ($AutoMove) {
         $arguments += "--debug-input=$($client.Direction)"
     }
@@ -102,6 +105,9 @@ if ($CombatTest) {
 }
 if ($ToolTest) {
     Write-Host "Tool test enabled: Z/X selects a tool; C uses or deploys it; trapped players alternate A/D."
+}
+if ($ManualLobby) {
+    Write-Host "Manual lobby enabled: choose a profession before readying each client; every player keeps one adrenaline."
 }
 Write-Host "Logs: $logDirectory"
 Write-Host "Stop all instances with: .\dev\stop_1v3.ps1"

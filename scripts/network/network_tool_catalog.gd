@@ -15,10 +15,31 @@ const SUPPORTED_TYPES := [
 	"spring_glove",
 	"robot",
 ]
+const MAX_LOADOUT_SIZE := 3
 
 
 static func supports(tool_type: String) -> bool:
 	return tool_type in SUPPORTED_TYPES
+
+
+static func allowed_for_slot(tool_type: String, slot: String) -> bool:
+	if not supports(tool_type):
+		return false
+	if slot == "monster":
+		return tool_type != "teleporter"
+	return slot in ["thief-1", "thief-2", "thief-3"]
+
+
+static func is_valid_loadout(tool_types: Array, slot: String) -> bool:
+	if tool_types.size() > MAX_LOADOUT_SIZE:
+		return false
+	var seen: Dictionary = {}
+	for tool_type_variant in tool_types:
+		var tool_type := str(tool_type_variant)
+		if not allowed_for_slot(tool_type, slot) or seen.has(tool_type):
+			return false
+		seen[tool_type] = true
+	return true
 
 
 static func make_tool(tool_type: String, id: String) -> Dictionary:

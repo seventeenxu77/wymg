@@ -4,8 +4,21 @@ extends Control
 signal back_requested
 
 const NETWORK_SESSION_SCRIPT := preload("res://scripts/network/network_session.gd")
+const NETWORK_TOOL_CATALOG := preload(
+	"res://scripts/network/network_tool_catalog.gd"
+)
+const PROFESSION_CATALOG := preload(
+	"res://scripts/professions/profession_catalog.gd"
+)
+const GAME_STATE_BASE := preload("res://scripts/systems/game_state_base.gd")
 const MAIN_MENU_STYLE := preload("res://scripts/presentation/main_menu_overlay_style.gd")
 const UI_FONT: Font = preload("res://assets/fonts/MaShanZheng-Regular.ttf")
+const VIEWPORT_FRAME_TEXTURE: Texture2D = preload(
+	"res://assets/ui/viewport_frame_handdrawn.png"
+)
+const ADRENALINE_ICON: Texture2D = preload(
+	"res://assets/ui/icons/adrenaline.png"
+)
 
 var session: NetworkSession
 var name_input: LineEdit
@@ -13,6 +26,9 @@ var host_input: LineEdit
 var port_input: LineEdit
 var status_label: Label
 var players_label: Label
+var profession_option: OptionButton
+var loadout_slot_icons: Array[TextureRect] = []
+var loadout_slot_labels: Array[Label] = []
 var host_button: Button
 var join_button: Button
 var leave_button: Button
@@ -20,6 +36,8 @@ var ready_button: Button
 var start_button: Button
 var auto_ready_requested := false
 var auto_ready_sent := false
+var syncing_profession_option := false
+var toolbelt_frame_style: StyleBoxTexture
 
 
 func _ready() -> void:
@@ -27,6 +45,7 @@ func _ready() -> void:
 	theme = Theme.new()
 	theme.default_font = UI_FONT
 	theme.default_font_size = 20
+	toolbelt_frame_style = _make_toolbelt_frame_style()
 	session = NETWORK_SESSION_SCRIPT.new()
 	session.name = "NetworkSession"
 	add_child(session)
@@ -90,30 +109,31 @@ func _build_ui() -> void:
 	add_child(center)
 
 	var panel := PanelContainer.new()
-	panel.custom_minimum_size = Vector2(820, 650)
+	panel.name = "LobbyPanel"
+	panel.custom_minimum_size = Vector2(900, 710)
 	MAIN_MENU_STYLE.apply_panel(panel)
 	center.add_child(panel)
 
 	var margin := MarginContainer.new()
-	margin.add_theme_constant_override("margin_left", 42)
-	margin.add_theme_constant_override("margin_top", 22)
-	margin.add_theme_constant_override("margin_right", 42)
-	margin.add_theme_constant_override("margin_bottom", 22)
+	margin.add_theme_constant_override("margin_left", 36)
+	margin.add_theme_constant_override("margin_top", 18)
+	margin.add_theme_constant_override("margin_right", 36)
+	margin.add_theme_constant_override("margin_bottom", 18)
 	panel.add_child(margin)
 
 	var content := VBoxContainer.new()
-	content.add_theme_constant_override("separation", 10)
+	content.add_theme_constant_override("separation", 5)
 	margin.add_child(content)
 
 	var title := Label.new()
 	title.text = "联机狩猎"
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	title.add_theme_font_size_override("font_size", 46)
+	title.add_theme_font_size_override("font_size", 42)
 	title.add_theme_color_override("font_color", MAIN_MENU_STYLE.TEXT)
 	content.add_child(title)
 
 	var subtitle := Label.new()
-	subtitle.text = "网络大厅框架 · 当前用于连接、玩家槽与多实例调试"
+	subtitle.text = "一名怪物 · 三名盗贼"
 	subtitle.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	subtitle.add_theme_color_override("font_color", MAIN_MENU_STYLE.MUTED)
 	content.add_child(subtitle)
@@ -122,14 +142,13 @@ func _build_ui() -> void:
 	content.add_child(separator)
 
 	var form := GridContainer.new()
-	form.columns = 2
-	form.add_theme_constant_override("h_separation", 18)
-	form.add_theme_constant_override("v_separation", 12)
+	form.columns = 6
+	form.add_theme_constant_override("h_separation", 10)
 	content.add_child(form)
 
-	name_input = _add_text_field(form, "玩家名称", "本机玩家")
-	host_input = _add_text_field(form, "服务器地址", "127.0.0.1")
-	port_input = _add_text_field(form, "UDP 端口", "7777")
+	name_input = _add_text_field(form, "名称", "本机玩家", 160)
+	host_input = _add_text_field(form, "服务器", "127.0.0.1", 190)
+	port_input = _add_text_field(form, "端口", "7777", 100)
 
 	var actions := HBoxContainer.new()
 	actions.alignment = BoxContainer.ALIGNMENT_CENTER
@@ -146,26 +165,15 @@ func _build_ui() -> void:
 	status_label.custom_minimum_size.y = 38
 	content.add_child(status_label)
 
-	var players_title := Label.new()
-	players_title.text = "当前玩家槽"
-	players_title.add_theme_font_size_override("font_size", 25)
-	players_title.add_theme_color_override("font_color", MAIN_MENU_STYLE.GOLD)
-	content.add_child(players_title)
+	_build_profession_picker(content)
 
 	players_label = Label.new()
 	players_label.text = "尚无玩家。"
-	players_label.custom_minimum_size = Vector2(0, 82)
+	players_label.custom_minimum_size = Vector2(0, 76)
 	players_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	content.add_child(players_label)
 
-	var note := Label.new()
-	note.text = (
-		"玩家准备后由房主开始。也可以使用 dev/run_1v3.ps1 启动"
-		+ "独立服务器和四个自动准备的本机窗口。"
-	)
-	note.modulate = Color("#989d94")
-	note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	content.add_child(note)
+	_build_toolbelt(content)
 
 	var footer := HBoxContainer.new()
 	footer.alignment = BoxContainer.ALIGNMENT_CENTER
@@ -176,14 +184,47 @@ func _build_ui() -> void:
 	_add_button(footer, "返回模式选择", request_back)
 
 
-func _add_text_field(parent: GridContainer, label_text: String, initial_text: String) -> LineEdit:
+func _build_profession_picker(parent: Container) -> void:
+	var row := HBoxContainer.new()
+	row.name = "ProfessionPicker"
+	row.add_theme_constant_override("separation", 16)
+	parent.add_child(row)
+
+	var players_title := Label.new()
+	players_title.text = "当前玩家槽"
+	players_title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	players_title.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	players_title.add_theme_font_size_override("font_size", 25)
+	players_title.add_theme_color_override("font_color", MAIN_MENU_STYLE.GOLD)
+	row.add_child(players_title)
+
+	var label := Label.new()
+	label.text = "职业"
+	label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	label.add_theme_font_size_override("font_size", 22)
+	label.add_theme_color_override("font_color", MAIN_MENU_STYLE.GOLD)
+	row.add_child(label)
+
+	profession_option = OptionButton.new()
+	profession_option.custom_minimum_size = Vector2(300, 44)
+	profession_option.item_selected.connect(_on_profession_selected)
+	MAIN_MENU_STYLE.apply_button(profession_option)
+	row.add_child(profession_option)
+
+
+func _add_text_field(
+	parent: GridContainer,
+	label_text: String,
+	initial_text: String,
+	minimum_width := 420.0,
+) -> LineEdit:
 	var label := Label.new()
 	label.text = label_text
 	label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	parent.add_child(label)
 	var input := LineEdit.new()
 	input.text = initial_text
-	input.custom_minimum_size = Vector2(420, 44)
+	input.custom_minimum_size = Vector2(minimum_width, 44)
 	MAIN_MENU_STYLE.apply_line_edit(input)
 	parent.add_child(input)
 	return input
@@ -200,6 +241,82 @@ func _add_button(parent: Container, label_text: String, callback: Callable) -> B
 	MAIN_MENU_STYLE.apply_button(button)
 	parent.add_child(button)
 	return button
+
+
+func _build_toolbelt(parent: Container) -> void:
+	var tray := PanelContainer.new()
+	tray.name = "LoadoutToolbelt"
+	tray.custom_minimum_size = Vector2(0, 112)
+	tray.add_theme_stylebox_override("panel", toolbelt_frame_style)
+	parent.add_child(tray)
+
+	var tray_margin := MarginContainer.new()
+	tray_margin.add_theme_constant_override("margin_left", 20)
+	tray_margin.add_theme_constant_override("margin_top", 10)
+	tray_margin.add_theme_constant_override("margin_right", 20)
+	tray_margin.add_theme_constant_override("margin_bottom", 12)
+	tray.add_child(tray_margin)
+
+	var tray_content := VBoxContainer.new()
+	tray_content.add_theme_constant_override("separation", 2)
+	tray_margin.add_child(tray_content)
+	var title := Label.new()
+	title.text = "背包"
+	title.add_theme_font_size_override("font_size", 17)
+	title.add_theme_color_override("font_color", Color("#c5b79e"))
+	tray_content.add_child(title)
+
+	var slots := HBoxContainer.new()
+	slots.add_theme_constant_override("separation", 6)
+	tray_content.add_child(slots)
+	for index in range(NETWORK_TOOL_CATALOG.MAX_LOADOUT_SIZE):
+		var slot := PanelContainer.new()
+		slot.name = "ToolSlot%d" % (index + 1)
+		slot.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		slot.custom_minimum_size = Vector2(0, 62)
+		slot.add_theme_stylebox_override("panel", toolbelt_frame_style)
+		slots.add_child(slot)
+
+		var slot_margin := MarginContainer.new()
+		slot_margin.add_theme_constant_override("margin_left", 10)
+		slot_margin.add_theme_constant_override("margin_top", 6)
+		slot_margin.add_theme_constant_override("margin_right", 10)
+		slot_margin.add_theme_constant_override("margin_bottom", 6)
+		slot.add_child(slot_margin)
+		var slot_content := HBoxContainer.new()
+		slot_content.add_theme_constant_override("separation", 8)
+		slot_margin.add_child(slot_content)
+
+		var icon := TextureRect.new()
+		icon.custom_minimum_size = Vector2(46, 46)
+		icon.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+		icon.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+		icon.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		slot_content.add_child(icon)
+		loadout_slot_icons.append(icon)
+
+		var label := Label.new()
+		label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+		label.add_theme_font_size_override("font_size", 18)
+		label.add_theme_color_override("font_color", MAIN_MENU_STYLE.TEXT)
+		slot_content.add_child(label)
+		loadout_slot_labels.append(label)
+
+
+func _make_toolbelt_frame_style() -> StyleBoxTexture:
+	var style := StyleBoxTexture.new()
+	style.texture = VIEWPORT_FRAME_TEXTURE
+	style.texture_margin_left = 74
+	style.texture_margin_top = 68
+	style.texture_margin_right = 74
+	style.texture_margin_bottom = 68
+	style.content_margin_left = 0
+	style.content_margin_top = 0
+	style.content_margin_right = 0
+	style.content_margin_bottom = 0
+	return style
 
 
 func _on_host_pressed() -> void:
@@ -222,6 +339,13 @@ func _on_ready_pressed() -> void:
 	session.set_local_ready(not bool(entry.get("ready", false)))
 
 
+func _on_profession_selected(index: int) -> void:
+	if syncing_profession_option or index < 0:
+		return
+	var profession_id := str(profession_option.get_item_metadata(index))
+	session.set_local_profession(profession_id)
+
+
 func _on_start_pressed() -> void:
 	session.request_start_match()
 
@@ -241,11 +365,13 @@ func _on_players_changed(snapshot: Dictionary) -> void:
 	for id in ids:
 		var entry: Dictionary = snapshot[id]
 		lines.append(
-			"%s  Peer %-6s  %-10s  %s"
+			"%s  %s · %s　%s"
 			% [
 				"●" if bool(entry.get("ready", false)) else "○",
-				str(id),
 				_slot_label(str(entry.get("slot", ""))),
+				PROFESSION_CATALOG.title_for(
+					str(entry.get("profession_id", "")),
+				),
 				str(entry.get("name", "玩家")),
 			]
 		)
@@ -276,6 +402,70 @@ func _refresh_session_ui() -> void:
 	ready_button.disabled = not registered or session.match_running
 	start_button.text = "开始游戏" if session.is_server() else "等待房主开始"
 	start_button.disabled = not session.can_start_match()
+	_refresh_profession_ui(local_entry)
+	_refresh_loadout_ui()
+
+
+func _refresh_profession_ui(local_entry: Dictionary) -> void:
+	if not profession_option:
+		return
+	syncing_profession_option = true
+	profession_option.clear()
+	if local_entry.is_empty():
+		profession_option.add_item("连接后选择职业")
+		profession_option.set_item_metadata(0, "")
+		profession_option.disabled = true
+		syncing_profession_option = false
+		return
+	var slot := str(local_entry.get("slot", ""))
+	var profession_id := str(local_entry.get("profession_id", ""))
+	var selected_index := 0
+	var definitions := PROFESSION_CATALOG.for_slot(slot)
+	for index in range(definitions.size()):
+		var definition: Resource = definitions[index]
+		profession_option.add_item(definition.title)
+		profession_option.set_item_metadata(index, definition.id)
+		if definition.id == profession_id:
+			selected_index = index
+	if not definitions.is_empty():
+		profession_option.select(selected_index)
+	profession_option.disabled = (
+		bool(local_entry.get("ready", false))
+		or session.match_running
+		or definitions.size() <= 1
+	)
+	syncing_profession_option = false
+
+
+func _refresh_loadout_ui() -> void:
+	if loadout_slot_labels.size() < NETWORK_TOOL_CATALOG.MAX_LOADOUT_SIZE:
+		return
+	var entry: Dictionary = session.players.get(session.local_peer_id(), {})
+	var loadout: Array = entry.get("loadout", [])
+	for index in range(NETWORK_TOOL_CATALOG.MAX_LOADOUT_SIZE):
+		var icon := loadout_slot_icons[index]
+		var label := loadout_slot_labels[index]
+		if index >= loadout.size():
+			icon.texture = null
+			icon.hide()
+			label.text = "%d · 空" % (index + 1)
+			label.add_theme_color_override("font_color", MAIN_MENU_STYLE.MUTED)
+			continue
+		var tool_type := str(loadout[index])
+		icon.texture = (
+			ADRENALINE_ICON
+			if tool_type == "adrenaline"
+			else null
+		)
+		icon.visible = icon.texture != null
+		label.text = "%d · %s" % [
+			index + 1,
+			str(GAME_STATE_BASE.TOOL_DEFS.get(tool_type, {}).get(
+				"short",
+				tool_type,
+			)),
+		]
+		label.add_theme_color_override("font_color", MAIN_MENU_STYLE.TEXT)
 
 
 func _try_auto_ready() -> void:

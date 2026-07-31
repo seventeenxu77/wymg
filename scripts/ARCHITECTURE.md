@@ -38,7 +38,13 @@
 - `modes/game_mode_catalog.gd`：集中声明经典本地双人、联机狩猎、单人冒险和回合战棋入口。
 - `modes/mode_router.gd`：在主菜单和独立模式之间路由；不会修改经典本地双人的输入规则。
 - `network/network_lobby.gd`：纯 Control 联机大厅，不依赖现有双分屏 HUD。
-- `network/network_session.gd`：ENet 创建/加入、四个玩家槽、准备状态和开始比赛协议。
+- `network/network_session.gd`：ENet 创建/加入、四个玩家槽、准备状态和开始比赛协议；玩家
+  快照携带类型化职业 ID 与三格初始背包。服务器校验职业所属阵营并在准备后锁定；普通大厅
+  当前固定为一件肾上腺素，其他道具等待商店与持有物校验。
+- `professions/profession_definition.gd`：职业静态数据资源；当前保存稳定 ID、名称、所属阵营
+  和描述，后续技能与数值引用职业 ID，不把职业配置复制进玩家运行时字典。
+- `professions/profession_catalog.gd`：集中声明收藏家、侦察者、支援者和搬运者，提供槽位默认
+  职业、阵营合法性与大厅显示名称。收藏家只允许怪物槽，三个盗贼职业只允许盗贼槽。
 - `network/network_mansion_state.gd`：服务器权威的 36 房间宅邸、一怪物三盗贼、阶段计时、
   多人碰撞移动、家具交互、藏品放置、家具损毁、物品归属、个人携带和独立撤离；房间数据
   由现有 `RoomSystem` 按服务器种子生成。它还分别维护三个盗贼的潜行／暴露时间和短期噪音
@@ -66,7 +72,7 @@
   两者均不进入正式玩法规则。
 
 经典模式继续由 `main.gd` 直接运行。联机模式使用独立大厅，后续继续在新的网络比赛场景中实现
-物品、职业和玩法规则，不在经典模式中增加网络条件分支。`NetworkSession` 持有连接
+物品、技能和玩法规则，不在经典模式中增加网络条件分支。`NetworkSession` 持有连接
 和大厅状态，`NetworkMatch` 只在比赛期间读取同一会话；离开比赛时由模式路由统一关闭连接。
 
 `state/mansion_collision.gd` 是经典 `ActorSystem` 和 `NetworkMansionState` 共用的墙体、门洞、
