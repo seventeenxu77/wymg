@@ -65,6 +65,13 @@ const WEIGHT_SPEED_PENALTY := 0.07
 const HAULER_WEIGHT_SPEED_PENALTY := 0.035
 const MIN_WEIGHT_SPEED := 0.55
 const HAULER_MIN_WEIGHT_SPEED := 0.75
+const SCOUT_NOISE_MEMORY_SECONDS := 4.0
+const SCOUT_NOISE_BONUS_SECONDS := 1.0
+const SUPPORT_REVIVE_SECONDS := 1.75
+const SUPPORT_REVIVE_INVULNERABLE_SECONDS := 1.75
+const HAULER_SPRINT_NOISE_INTERVAL := 1.2
+const THIEF_CORE_TARGET := 2
+const TEAM_WIPE_SECONDS := 8.0
 
 var world_seed := 0
 var rooms: Array = []
@@ -72,6 +79,7 @@ var actors: Dictionary = {}
 var active_storage_by_peer: Dictionary = {}
 var last_furniture_action_at: Dictionary = {}
 var noises: Array = []
+var last_noise_by_role: Dictionary = {}
 var pending_world_events: Array = []
 var next_noise_id := 1
 var next_device_id := 1
@@ -81,6 +89,11 @@ var phase := "hide"
 var seconds_left := HIDE_SECONDS
 var phase_clock := 0.0
 var elapsed := 0.0
+var winner := ""
+var result_reason := ""
+var match_finished_at := -1.0
+var team_wipe_started_at := -1.0
+var extracted_core_count := 0
 var debug_combat_spawns := false
 var debug_tool_loadouts := false
 
@@ -97,6 +110,7 @@ func initialize(seed_value: int, players: Dictionary) -> void:
 	active_storage_by_peer.clear()
 	last_furniture_action_at.clear()
 	noises.clear()
+	last_noise_by_role.clear()
 	pending_world_events.clear()
 	next_noise_id = 1
 	next_device_id = 1
@@ -105,6 +119,11 @@ func initialize(seed_value: int, players: Dictionary) -> void:
 	seconds_left = HIDE_SECONDS
 	phase_clock = 0.0
 	elapsed = 0.0
+	winner = ""
+	result_reason = ""
+	match_finished_at = -1.0
+	team_wipe_started_at = -1.0
+	extracted_core_count = 0
 	sync_players(players)
 
 
@@ -137,9 +156,13 @@ func step(
 	delta: float,
 	inputs: Dictionary,
 	rescue_inputs: Dictionary = {},
+	skill_inputs: Dictionary = {},
 ) -> void:
 	elapsed += delta
 	_update_phase(delta)
+	if phase == "finished":
+		prune_noises(elapsed)
+		return
 	for peer_id_variant in actors:
 		var peer_id := int(peer_id_variant)
 		var actor: Dictionary = actors[peer_id_variant]
@@ -170,13 +193,28 @@ func step(
 			if role == "thief":
 				actor["hidden_from_monster"] = false
 				actor["last_moved_at"] = elapsed
+				if (
+					str(actor.get("profession_id", "")) == "hauler"
+					and elapsed < float(actor.get("hauler_sprint_until", 0.0))
+				):
+					_add_noise(
+						peer_id,
+						"卸重疾行脚步",
+						1.2,
+						HAULER_SPRINT_NOISE_INTERVAL,
+					)
 			else:
 				_add_noise(peer_id, "怪物脚步", 1.2, 0.42)
 		actors[peer_id] = actor
 	_update_tool_states(delta)
+	if phase == "finished":
+		prune_noises(elapsed)
+		return
 	_update_devices(delta)
+	_update_support_healing(delta, skill_inputs, inputs)
 	_update_rescues(delta, rescue_inputs)
 	_update_thief_stealth()
+	_update_victory_state()
 	prune_noises(elapsed)
 
 
@@ -189,9 +227,15 @@ func begin_hunt_countdown(requester_peer_id := 0) -> bool:
 		var requester: Dictionary = actors[requester_peer_id]
 		if _role_for_slot(str(requester.get("slot", ""))) != "monster":
 			return false
+	_ensure_core_treasures_placed()
 	phase = "ready"
 	seconds_left = READY_SECONDS
 	phase_clock = 0.0
+	winner = ""
+	result_reason = ""
+	match_finished_at = -1.0
+	team_wipe_started_at = -1.0
+	extracted_core_count = 0
 	active_storage_by_peer.clear()
 	_respawn_all()
 	return true
@@ -423,7 +467,10 @@ func _drop_carried_loot_at(
 	carried_loot.remove_at(selected_index)
 	_refresh_carried_totals(actor)
 	var dropped_item := carried_item.duplicate(true)
-	dropped_item["source_id"] = str(carried_item.get("id", ""))
+	dropped_item["source_id"] = str(carried_item.get(
+		"source_id",
+		carried_item.get("id", ""),
+	))
 	dropped_item["id"] = "dropped-loot-%d" % next_drop_id
 	next_drop_id += 1
 	dropped_item["collected"] = false
@@ -491,20 +538,25 @@ func extract_thief(peer_id: int) -> Dictionary:
 		return _rejected_event(peer_id, "只有回到入口处才能撤离。")
 
 	var carried_loot: Array = actor.get("carried_loot", [])
-	actor["extracted_loot"] = carried_loot.duplicate(true)
-	carried_loot.clear()
-	actor["extracted_value"] = int(actor.get("carried_value", 0))
-	actor["carried_value"] = 0
-	actor["carried_weight"] = 0
-	actor["extracted"] = true
-	actor["moving"] = false
-	actors[peer_id] = actor
+	var extracted_value := int(actor.get("carried_value", 0))
+	var extracted_cores := _core_count_in_loot(carried_loot)
+	_bank_actor_extraction(peer_id, actor)
 	return {
 		"accepted": true,
 		"kind": "extraction",
 		"requester_peer_id": peer_id,
-		"message": "撤离成功，本次带出价值 %d 的财物；其他玩家仍可继续行动。"
-		% int(actor["extracted_value"]),
+		"extracted_core_count": extracted_core_count,
+		"message": (
+			"撤离成功，带出价值 %d 的财物%s；核心藏品进度 %d/%d。"
+			% [
+				extracted_value,
+				"和 %d 件核心藏品" % extracted_cores
+				if extracted_cores > 0
+				else "",
+				extracted_core_count,
+				THIEF_CORE_TARGET,
+			]
+		),
 	}
 
 
@@ -546,6 +598,10 @@ func toggle_treasure(peer_id: int, treasure_index: int) -> Dictionary:
 		return _rejected_event(peer_id, "%s的藏品槽已被占用。" % furniture["kind"])
 	if _treasure_is_deployed(str(treasure["id"])):
 		return _rejected_event(peer_id, "%s已存放在其他位置。" % treasure["label"])
+	if actor["room"] == ENTRANCE_ROOM:
+		return _rejected_event(peer_id, "核心藏品不能藏在入口房。")
+	if _room_has_deployed_core(room_at(actor["room"])):
+		return _rejected_event(peer_id, "每个房间最多藏一件核心藏品。")
 	contents.append(treasure.duplicate(true))
 	_refresh_furniture_durability(furniture)
 	message = "已将%s存入%s（价值 %d）。" % [
@@ -856,17 +912,42 @@ func use_active_skill(peer_id: int) -> Dictionary:
 	if not actors.has(peer_id):
 		return _rejected_event(peer_id, "玩家不在本局中。")
 	var actor: Dictionary = actors[peer_id]
-	if str(actor.get("profession_id", "")) != "collector":
-		return _rejected_event(peer_id, "当前职业没有可用的主动技能。")
+	var rejection := _active_skill_rejection(actor)
+	if not rejection.is_empty():
+		return _rejected_event(peer_id, rejection)
+	match str(actor.get("profession_id", "")):
+		"collector":
+			return _use_collector_active_skill(peer_id, actor)
+		"scout":
+			return _use_scout_active_skill(peer_id, actor)
+		"support":
+			return _rejected_event(peer_id, "请在受伤队友附近按住 Shift 完成包扎。")
+		"hauler":
+			return _use_hauler_active_skill(peer_id, actor)
+	return _rejected_event(peer_id, "当前职业没有可用的主动技能。")
+
+
+func _active_skill_rejection(actor: Dictionary) -> String:
 	if (
 		bool(actor.get("extracted", false))
 		or bool(actor.get("downed", false))
 		or bool(actor.get("trapped", false))
 		or elapsed < float(actor.get("hit_stun_until", 0.0))
 	):
-		return _rejected_event(peer_id, "当前状态无法使用职业技能。")
+		return "当前状态无法使用职业技能。"
 	if phase == "ready":
-		return _rejected_event(peer_id, "准备倒计时中无法布置机关。")
+		return "准备倒计时中无法使用职业技能。"
+	if (
+		str(actor.get("profession_id", "")) != "collector"
+		and phase != "hunt"
+	):
+		return "狩猎开始后才能使用盗贼职业技能。"
+	if float(actor.get("teleport_ends", -1.0)) > elapsed:
+		return "传送蓄力期间无法使用职业技能。"
+	return ""
+
+
+func _use_collector_active_skill(peer_id: int, actor: Dictionary) -> Dictionary:
 	var definition := SKILL_CATALOG.find(SKILL_CATALOG.COLLECTOR_TRAP)
 	if not definition:
 		return _rejected_event(peer_id, "收藏家技能定义不存在。")
@@ -913,6 +994,67 @@ func use_active_skill(peer_id: int) -> Dictionary:
 		devices,
 		"已布置收藏家机关；%.0f 秒后可再次使用。"
 		% float(definition.cooldown),
+	)
+
+
+func _use_scout_active_skill(peer_id: int, actor: Dictionary) -> Dictionary:
+	var definition := SKILL_CATALOG.find(SKILL_CATALOG.SCOUT_ECHO_SCAN)
+	if not definition:
+		return _rejected_event(peer_id, "侦察者技能定义不存在。")
+	var ready_at := float(actor.get("active_skill_ready_at", 0.0))
+	if elapsed < ready_at:
+		return _rejected_event(
+			peer_id,
+			"回声勘察冷却中，还需 %.1f 秒。" % (ready_at - elapsed),
+		)
+	actor["active_skill_ready_at"] = elapsed + float(definition.cooldown)
+	actor["scout_scan_until"] = elapsed + float(definition.duration)
+	actor["scout_last_known_room"] = Vector2i(-1, -1)
+	actor["scout_last_known_until"] = 0.0
+	var last_monster_noise: Dictionary = last_noise_by_role.get("monster", {})
+	if (
+		not last_monster_noise.is_empty()
+		and elapsed - float(last_monster_noise.get("created", -INF))
+		<= SCOUT_NOISE_MEMORY_SECONDS
+	):
+		actor["scout_last_known_room"] = last_monster_noise.get(
+			"room",
+			Vector2i(-1, -1),
+		)
+		actor["scout_last_known_until"] = actor["scout_scan_until"]
+	_reveal_thief(actor)
+	actors[peer_id] = actor
+	_add_noise(peer_id, "回声勘察", 1.0)
+	return _skill_event(
+		peer_id,
+		SKILL_CATALOG.SCOUT_ECHO_SCAN,
+		actor,
+		[],
+		"回声勘察已启动，当前与相邻房间将标记 5 秒。",
+	)
+
+
+func _use_hauler_active_skill(peer_id: int, actor: Dictionary) -> Dictionary:
+	var definition := SKILL_CATALOG.find(SKILL_CATALOG.HAULER_SPRINT)
+	if not definition:
+		return _rejected_event(peer_id, "搬运者技能定义不存在。")
+	var ready_at := float(actor.get("active_skill_ready_at", 0.0))
+	if elapsed < ready_at:
+		return _rejected_event(
+			peer_id,
+			"卸重疾行冷却中，还需 %.1f 秒。" % (ready_at - elapsed),
+		)
+	actor["active_skill_ready_at"] = elapsed + float(definition.cooldown)
+	actor["hauler_sprint_until"] = elapsed + float(definition.duration)
+	_reveal_thief(actor)
+	actors[peer_id] = actor
+	_add_noise(peer_id, "卸重疾行", 1.2)
+	return _skill_event(
+		peer_id,
+		SKILL_CATALOG.HAULER_SPRINT,
+		actor,
+		[],
+		"卸重疾行已启动：5 秒内忽略负重，但会持续暴露行踪。",
 	)
 
 
@@ -1138,6 +1280,15 @@ func apply_world_event(event: Dictionary) -> bool:
 	var event_kind := str(event.get("kind", ""))
 	if event_kind == "extraction":
 		return true
+	if event_kind == "match_result":
+		winner = str(event.get("winner", ""))
+		result_reason = str(event.get("reason", ""))
+		extracted_core_count = int(event.get("extracted_core_count", 0))
+		match_finished_at = float(event.get("finished_at", elapsed))
+		team_wipe_started_at = -1.0
+		phase = "finished"
+		seconds_left = 0
+		return true
 	if event_kind == "noise":
 		return _apply_noise_event(event)
 	if event_kind == "combat":
@@ -1203,7 +1354,10 @@ func drain_world_events() -> Array:
 func prune_noises(now: float) -> void:
 	for index in range(noises.size() - 1, -1, -1):
 		var noise: Dictionary = noises[index]
-		if now >= float(noise.get("expires", 0.0)):
+		if now >= float(noise.get(
+			"scout_expires",
+			noise.get("expires", 0.0),
+		)):
 			noises.remove_at(index)
 
 
@@ -1269,6 +1423,18 @@ func snapshot() -> Dictionary:
 			_actor_speed_multiplier(actor),
 			float(actor.get("active_skill_ready_at", 0.0)),
 			float(_active_skill_traps(int(peer_id_variant)).size()),
+			float(
+				actor.get("scout_scan_until", 0.0)
+				if str(actor.get("profession_id", "")) == "scout"
+				else actor.get("hauler_sprint_until", 0.0)
+			),
+			float(_packed_room_coord(actor.get(
+				"scout_last_known_room",
+				Vector2i(-1, -1),
+			))),
+			float(actor.get("scout_last_known_until", 0.0)),
+			float(actor.get("support_heal_progress", 0.0)),
+			float(actor.get("rescue_required_seconds", REVIVE_SECONDS)),
 		])
 		var inventory_record := PackedFloat32Array([
 			float(actor.get("tool_selected", 0)),
@@ -1292,6 +1458,14 @@ func snapshot() -> Dictionary:
 		"p": _phase_index(phase),
 		"t": seconds_left,
 		"e": elapsed,
+		"m": PackedFloat32Array([
+			_winner_index(winner),
+			_result_reason_index(result_reason),
+			extracted_core_count,
+			team_wipe_started_at,
+			total_extracted_value(),
+			escaped_thief_count(),
+		]),
 	}
 
 
@@ -1458,14 +1632,7 @@ func _update_tool_states(delta: float) -> void:
 func _complete_teleport_extraction(peer_id: int, actor: Dictionary) -> void:
 	actor["teleport_started"] = -1.0
 	actor["teleport_ends"] = -1.0
-	var carried_loot: Array = actor.get("carried_loot", [])
-	actor["extracted_loot"] = carried_loot.duplicate(true)
-	carried_loot.clear()
-	actor["extracted_value"] = int(actor.get("carried_value", 0))
-	actor["carried_value"] = 0
-	actor["carried_weight"] = 0
-	actor["extracted"] = true
-	actor["moving"] = false
+	_bank_actor_extraction(peer_id, actor)
 	pending_world_events.append(_tool_event(
 		peer_id,
 		"teleporter_complete",
@@ -1705,13 +1872,20 @@ func _skill_event(
 	actor: Dictionary,
 	devices: Array,
 	message: String,
+	target_actors: Array = [],
 ) -> Dictionary:
 	return {
 		"accepted": true,
 		"kind": "skill",
 		"skill_action": skill_id,
 		"requester_peer_id": requester_peer_id,
+		"target_peer_id": (
+			int((target_actors[0] as Dictionary).get("peer_id", 0))
+			if not target_actors.is_empty()
+			else 0
+		),
 		"actor": _tool_actor_mutation(requester_peer_id, actor),
+		"target_actors": target_actors.duplicate(true),
 		"devices": devices.duplicate(true),
 		"message": message,
 	}
@@ -1737,6 +1911,23 @@ func _tool_actor_mutation(peer_id: int, actor: Dictionary) -> Dictionary:
 		"carried_weight": int(actor.get("carried_weight", 0)),
 		"carried_loot": (actor.get("carried_loot", []) as Array).duplicate(true),
 		"active_skill_ready_at": float(actor.get("active_skill_ready_at", 0.0)),
+		"scout_scan_until": float(actor.get("scout_scan_until", 0.0)),
+		"scout_last_known_room": actor.get(
+			"scout_last_known_room",
+			Vector2i(-1, -1),
+		),
+		"scout_last_known_until": float(actor.get(
+			"scout_last_known_until",
+			0.0,
+		)),
+		"support_heal_progress": float(actor.get("support_heal_progress", 0.0)),
+		"support_heal_target_peer_id": int(actor.get(
+			"support_heal_target_peer_id",
+			0,
+		)),
+		"medical_fatigue_until": float(actor.get("medical_fatigue_until", 0.0)),
+		"hauler_sprint_until": float(actor.get("hauler_sprint_until", 0.0)),
+		"hp": int(actor.get("hp", MAX_HP)),
 		"trapped": bool(actor.get("trapped", false)),
 		"trapped_by": str(actor.get("trapped_by", "")),
 		"trapped_started_at": float(actor.get("trapped_started_at", -10.0)),
@@ -1795,6 +1986,14 @@ func _apply_tool_actor_mutation(mutation: Dictionary) -> void:
 		"carried_weight",
 		"carried_loot",
 		"active_skill_ready_at",
+		"scout_scan_until",
+		"scout_last_known_room",
+		"scout_last_known_until",
+		"support_heal_progress",
+		"support_heal_target_peer_id",
+		"medical_fatigue_until",
+		"hauler_sprint_until",
+		"hp",
 		"trapped",
 		"trapped_by",
 		"trapped_started_at",
@@ -2159,6 +2358,11 @@ static func carried_weight(actor: Dictionary) -> int:
 func burden_speed_multiplier(actor: Dictionary) -> float:
 	if _role_for_slot(str(actor.get("slot", ""))) != "thief":
 		return 1.0
+	if (
+		str(actor.get("profession_id", "")) == "hauler"
+		and elapsed < float(actor.get("hauler_sprint_until", 0.0))
+	):
+		return 1.0
 	var weight := int(actor.get("carried_weight", carried_weight(actor)))
 	if str(actor.get("profession_id", "")) == "hauler":
 		return maxf(
@@ -2185,7 +2389,7 @@ func _actor_speed_multiplier(actor: Dictionary) -> float:
 		status_multiplier = 2.0
 	elif elapsed < float(actor.get("fatigue_until", 0.0)):
 		status_multiplier = 0.5
-	return burden_speed_multiplier(actor) * status_multiplier
+	return minf(burden_speed_multiplier(actor) * status_multiplier, 2.0)
 
 
 func _reveal_if_thief(actor: Dictionary) -> void:
@@ -2268,11 +2472,13 @@ func _add_noise_at(
 		"pos": position,
 		"created": elapsed,
 		"expires": elapsed + duration,
+		"scout_expires": elapsed + duration + SCOUT_NOISE_BONUS_SECONDS,
 		"duration": duration,
 		"global": global,
 	}
 	next_noise_id += 1
 	noises.append(entry)
+	last_noise_by_role[source_role] = entry.duplicate(true)
 	pending_world_events.append({
 		"accepted": true,
 		"kind": "noise",
@@ -2300,6 +2506,105 @@ static func _device_state_from_index(device_type: String, index: int) -> String:
 		"robot":
 			return ["active", "stunned"][clampi(index, 0, 1)]
 	return "active"
+
+
+func _update_support_healing(
+	delta: float,
+	skill_inputs: Dictionary,
+	movement_inputs: Dictionary,
+) -> void:
+	var definition := SKILL_CATALOG.find(SKILL_CATALOG.SUPPORT_FIRST_AID)
+	if not definition:
+		return
+	for peer_id_variant in actors.keys():
+		var peer_id := int(peer_id_variant)
+		var healer: Dictionary = actors[peer_id_variant]
+		if str(healer.get("profession_id", "")) != "support":
+			continue
+		var held := bool(skill_inputs.get(peer_id, false))
+		var movement: Vector2 = movement_inputs.get(peer_id, Vector2.ZERO)
+		if (
+			not held
+			or not movement.is_zero_approx()
+			or phase != "hunt"
+			or not _active_skill_rejection(healer).is_empty()
+			or elapsed < float(healer.get("active_skill_ready_at", 0.0))
+		):
+			_reset_support_channel(healer)
+			actors[peer_id] = healer
+			continue
+		var target_peer_id := _nearest_support_heal_target(
+			peer_id,
+			healer,
+			float(definition.cast_range),
+		)
+		if target_peer_id == 0:
+			_reset_support_channel(healer)
+			actors[peer_id] = healer
+			continue
+		if int(healer.get("support_heal_target_peer_id", 0)) != target_peer_id:
+			healer["support_heal_target_peer_id"] = target_peer_id
+			healer["support_heal_progress"] = 0.0
+		healer["support_heal_progress"] = (
+			float(healer.get("support_heal_progress", 0.0)) + delta
+		)
+		if float(healer["support_heal_progress"]) < float(definition.channel_time):
+			actors[peer_id] = healer
+			continue
+		var target: Dictionary = actors[target_peer_id]
+		target["hp"] = mini(int(target.get("hp", MAX_HP)) + 1, MAX_HP)
+		target["medical_fatigue_until"] = (
+			elapsed + float(definition.target_lockout)
+		)
+		healer["active_skill_ready_at"] = elapsed + float(definition.cooldown)
+		_reset_support_channel(healer)
+		actors[target_peer_id] = target
+		actors[peer_id] = healer
+		pending_world_events.append(_skill_event(
+			peer_id,
+			SKILL_CATALOG.SUPPORT_FIRST_AID,
+			healer,
+			[],
+			"%s为%s完成包扎，恢复了 1 点生命。"
+			% [
+				str(healer.get("name", "支援者")),
+				str(target.get("name", "队友")),
+			],
+			[_tool_actor_mutation(target_peer_id, target)],
+		))
+
+
+func _nearest_support_heal_target(
+	healer_peer_id: int,
+	healer: Dictionary,
+	maximum_distance: float,
+) -> int:
+	var nearest_peer_id := 0
+	var nearest_distance := INF
+	for target_peer_id_variant in actors:
+		var target_peer_id := int(target_peer_id_variant)
+		if target_peer_id == healer_peer_id:
+			continue
+		var target: Dictionary = actors[target_peer_id_variant]
+		if (
+			_role_for_slot(str(target.get("slot", ""))) != "thief"
+			or bool(target.get("extracted", false))
+			or bool(target.get("downed", false))
+			or int(target.get("hp", MAX_HP)) >= MAX_HP
+			or elapsed < float(target.get("medical_fatigue_until", 0.0))
+			or target.get("room", Vector2i(-1, -1)) != healer["room"]
+		):
+			continue
+		var distance := (target["pos"] as Vector2).distance_to(healer["pos"])
+		if distance <= maximum_distance and distance < nearest_distance:
+			nearest_peer_id = target_peer_id
+			nearest_distance = distance
+	return nearest_peer_id
+
+
+func _reset_support_channel(actor: Dictionary) -> void:
+	actor["support_heal_progress"] = 0.0
+	actor["support_heal_target_peer_id"] = 0
 
 
 func _update_rescues(delta: float, rescue_inputs: Dictionary) -> void:
@@ -2354,27 +2659,42 @@ func _update_rescues(delta: float, rescue_inputs: Dictionary) -> void:
 		):
 			target["being_revived"] = false
 			target["rescue_progress"] = 0.0
+			target["rescue_required_seconds"] = REVIVE_SECONDS
 			actors[peer_id] = target
 			continue
 		if not active_revivers.has(peer_id):
 			target["being_revived"] = false
 			target["rescue_progress"] = 0.0
+			target["rescue_required_seconds"] = REVIVE_SECONDS
 			actors[peer_id] = target
 			continue
 		var reviver_peer_id := int(active_revivers[peer_id])
+		var reviver: Dictionary = actors[reviver_peer_id]
+		var trained_rescuer := (
+			str(reviver.get("profession_id", "")) == "support"
+		)
+		var required_seconds := (
+			SUPPORT_REVIVE_SECONDS if trained_rescuer else REVIVE_SECONDS
+		)
 		target["being_revived"] = true
+		target["rescue_required_seconds"] = required_seconds
 		target["rescue_progress"] = (
 			float(target.get("rescue_progress", 0.0)) + delta
 		)
-		if float(target["rescue_progress"]) < REVIVE_SECONDS:
+		if float(target["rescue_progress"]) < required_seconds:
 			actors[peer_id] = target
 			continue
 		target["hp"] = 1
 		target["downed"] = false
 		target["being_revived"] = false
 		target["rescue_progress"] = 0.0
+		target["rescue_required_seconds"] = REVIVE_SECONDS
 		target["hit_stun_until"] = elapsed + REVIVE_HIT_STUN_SECONDS
-		target["hit_invulnerable_until"] = elapsed + REVIVE_INVULNERABLE_SECONDS
+		target["hit_invulnerable_until"] = elapsed + (
+			SUPPORT_REVIVE_INVULNERABLE_SECONDS
+			if trained_rescuer
+			else REVIVE_INVULNERABLE_SECONDS
+		)
 		target["hit_reaction_started_at"] = -10.0
 		target["hit_reaction_direction"] = Vector2.ZERO
 		target["hidden_from_monster"] = false
@@ -2402,6 +2722,10 @@ func _combat_actor_mutation(peer_id: int, actor: Dictionary) -> Dictionary:
 		"hit_reaction_direction": actor.get("hit_reaction_direction", Vector2.ZERO),
 		"rescue_progress": float(actor.get("rescue_progress", 0.0)),
 		"being_revived": bool(actor.get("being_revived", false)),
+		"rescue_required_seconds": float(actor.get(
+			"rescue_required_seconds",
+			REVIVE_SECONDS,
+		)),
 	}
 
 
@@ -2420,6 +2744,13 @@ func _update_thief_stealth() -> void:
 			continue
 		if bool(actor.get("moving", false)):
 			actor["hidden_from_monster"] = false
+		if (
+			str(actor.get("profession_id", "")) == "hauler"
+			and elapsed < float(actor.get("hauler_sprint_until", 0.0))
+		):
+			actor["hidden_from_monster"] = false
+			actors[peer_id_variant] = actor
+			continue
 		var can_hide_at := maxf(
 			float(actor.get("last_moved_at", elapsed)) + THIEF_HIDE_DELAY,
 			float(actor.get("revealed_until", 0.0)),
@@ -2467,10 +2798,12 @@ func _add_noise(
 		"pos": actor["pos"],
 		"created": elapsed,
 		"expires": elapsed + duration,
+		"scout_expires": elapsed + duration + SCOUT_NOISE_BONUS_SECONDS,
 		"duration": duration,
 	}
 	next_noise_id += 1
 	noises.append(entry)
+	last_noise_by_role[str(entry["source_role"])] = entry.duplicate(true)
 	pending_world_events.append({
 		"accepted": true,
 		"kind": "noise",
@@ -2487,6 +2820,10 @@ func _public_noise(noise: Dictionary) -> Dictionary:
 		"pos": noise["pos"],
 		"created": float(noise["created"]),
 		"expires": float(noise["expires"]),
+		"scout_expires": float(noise.get(
+			"scout_expires",
+			noise["expires"],
+		)),
 		"duration": float(noise["duration"]),
 		"global": bool(noise.get("global", false)),
 	}
@@ -2509,6 +2846,7 @@ func _update_phase(delta: float) -> void:
 	if phase not in ["hide", "ready", "hunt"]:
 		return
 	if phase == "hunt" and seconds_left <= 0:
+		_finish_match("monster", "time")
 		return
 	phase_clock += delta
 	if phase_clock < 1.0:
@@ -2526,7 +2864,158 @@ func _update_phase(delta: float) -> void:
 			seconds_left = HUNT_SECONDS
 			phase_clock = 0.0
 			_respawn_all()
+		elif phase == "hunt":
+			_finish_match("monster", "time")
 		break
+
+
+func _bank_actor_extraction(peer_id: int, actor: Dictionary) -> void:
+	var carried_loot: Array = actor.get("carried_loot", [])
+	actor["extracted_loot"] = carried_loot.duplicate(true)
+	carried_loot.clear()
+	actor["extracted_value"] = int(actor.get("carried_value", 0))
+	actor["carried_value"] = 0
+	actor["carried_weight"] = 0
+	actor["extracted"] = true
+	actor["moving"] = false
+	actors[peer_id] = actor
+	extracted_core_count = _count_extracted_core_treasures()
+	_update_victory_state()
+
+
+func _update_victory_state() -> void:
+	if phase != "hunt" or not winner.is_empty():
+		return
+	extracted_core_count = _count_extracted_core_treasures()
+	if extracted_core_count >= THIEF_CORE_TARGET:
+		_finish_match("thief", "core_target")
+		return
+	var active_thieves: Array = []
+	for peer_id_variant in actors:
+		var actor: Dictionary = actors[peer_id_variant]
+		if (
+			_role_for_slot(str(actor.get("slot", ""))) == "thief"
+			and not bool(actor.get("extracted", false))
+		):
+			active_thieves.append(actor)
+	if active_thieves.is_empty():
+		_finish_match("monster", "no_active_thieves")
+		return
+	var all_downed := true
+	for actor_variant in active_thieves:
+		if not bool((actor_variant as Dictionary).get("downed", false)):
+			all_downed = false
+			break
+	if not all_downed:
+		team_wipe_started_at = -1.0
+		return
+	if team_wipe_started_at < 0.0:
+		team_wipe_started_at = elapsed
+		return
+	if elapsed - team_wipe_started_at >= TEAM_WIPE_SECONDS:
+		_finish_match("monster", "team_wipe")
+
+
+func _finish_match(winning_role: String, reason: String) -> bool:
+	if phase == "finished" or not winner.is_empty():
+		return false
+	winner = winning_role
+	result_reason = reason
+	match_finished_at = elapsed
+	team_wipe_started_at = -1.0
+	extracted_core_count = _count_extracted_core_treasures()
+	phase = "finished"
+	seconds_left = 0
+	phase_clock = 0.0
+	active_storage_by_peer.clear()
+	for peer_id_variant in actors:
+		var actor: Dictionary = actors[peer_id_variant]
+		actor["moving"] = false
+		actor["being_revived"] = false
+		actor["support_heal_progress"] = 0.0
+		actor["support_heal_target_peer_id"] = 0
+		actors[peer_id_variant] = actor
+	pending_world_events.append(_match_result_event())
+	return true
+
+
+func _match_result_event() -> Dictionary:
+	var message := ""
+	match result_reason:
+		"core_target":
+			message = "盗贼带出了两件核心藏品，盗贼阵营胜利。"
+		"team_wipe":
+			message = "剩余盗贼全部倒地，收藏家完成封锁。"
+		"time":
+			message = "狩猎时间耗尽，收藏家守住了核心藏品。"
+		"no_active_thieves":
+			message = "已无盗贼能够继续行动，收藏家获胜。"
+	return {
+		"accepted": true,
+		"kind": "match_result",
+		"requester_peer_id": 0,
+		"winner": winner,
+		"reason": result_reason,
+		"finished_at": match_finished_at,
+		"extracted_core_count": extracted_core_count,
+		"core_target": THIEF_CORE_TARGET,
+		"total_core_count": GAME_STATE_BASE.TREASURES.size(),
+		"extracted_value": total_extracted_value(),
+		"escaped_count": escaped_thief_count(),
+		"player_results": _player_result_rows(),
+		"message": message,
+	}
+
+
+func _player_result_rows() -> Array:
+	var rows: Array = []
+	for peer_id_variant in actors:
+		var peer_id := int(peer_id_variant)
+		var actor: Dictionary = actors[peer_id_variant]
+		if _role_for_slot(str(actor.get("slot", ""))) != "thief":
+			continue
+		rows.append({
+			"peer_id": peer_id,
+			"slot": str(actor.get("slot", "")),
+			"name": str(actor.get("name", "盗贼")),
+			"escaped": bool(actor.get("extracted", false)),
+			"extracted_value": int(actor.get("extracted_value", 0)),
+			"core_count": _core_count_in_loot(actor.get("extracted_loot", [])),
+		})
+	rows.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		return str(a.get("slot", "")) < str(b.get("slot", ""))
+	)
+	return rows
+
+
+func total_extracted_value() -> int:
+	var total := 0
+	for actor_variant in actors.values():
+		var actor: Dictionary = actor_variant
+		if _role_for_slot(str(actor.get("slot", ""))) == "thief":
+			total += int(actor.get("extracted_value", 0))
+	return total
+
+
+func escaped_thief_count() -> int:
+	var count := 0
+	for actor_variant in actors.values():
+		var actor: Dictionary = actor_variant
+		if (
+			_role_for_slot(str(actor.get("slot", ""))) == "thief"
+			and bool(actor.get("extracted", false))
+		):
+			count += 1
+	return count
+
+
+func team_wipe_seconds_left() -> float:
+	if team_wipe_started_at < 0.0 or phase != "hunt":
+		return 0.0
+	return maxf(
+		TEAM_WIPE_SECONDS - (elapsed - team_wipe_started_at),
+		0.0,
+	)
 
 
 func _make_actor(peer_id: int, player: Dictionary) -> Dictionary:
@@ -2553,6 +3042,14 @@ func _make_actor(peer_id: int, player: Dictionary) -> Dictionary:
 	actor["carried_value"] = 0
 	actor["carried_weight"] = 0
 	actor["active_skill_ready_at"] = 0.0
+	actor["scout_scan_until"] = 0.0
+	actor["scout_last_known_room"] = Vector2i(-1, -1)
+	actor["scout_last_known_until"] = 0.0
+	actor["support_heal_progress"] = 0.0
+	actor["support_heal_target_peer_id"] = 0
+	actor["medical_fatigue_until"] = 0.0
+	actor["hauler_sprint_until"] = 0.0
+	actor["rescue_required_seconds"] = REVIVE_SECONDS
 	actor["pills"] = 0
 	actor["extracted"] = false
 	actor["extracted_value"] = 0
@@ -2611,6 +3108,7 @@ func _respawn_all() -> void:
 		actor["attack_ready_at"] = 0.0
 		actor["attack_started_at"] = -10.0
 		actor["rescue_progress"] = 0.0
+		actor["rescue_required_seconds"] = REVIVE_SECONDS
 		actor["being_revived"] = false
 		actor["trapped"] = false
 		actor["trapped_by"] = ""
@@ -2621,6 +3119,13 @@ func _respawn_all() -> void:
 		actor["fatigue_until"] = 0.0
 		actor["teleport_started"] = -1.0
 		actor["teleport_ends"] = -1.0
+		actor["scout_scan_until"] = 0.0
+		actor["scout_last_known_room"] = Vector2i(-1, -1)
+		actor["scout_last_known_until"] = 0.0
+		actor["support_heal_progress"] = 0.0
+		actor["support_heal_target_peer_id"] = 0
+		actor["medical_fatigue_until"] = 0.0
+		actor["hauler_sprint_until"] = 0.0
 		actors[peer_id_variant] = actor
 
 
@@ -2742,6 +3247,26 @@ func _move_actor_axis(
 	actor["moving"] = true
 
 
+static func _packed_room_coord(room_coord: Vector2i) -> int:
+	if (
+		room_coord.x < 0
+		or room_coord.y < 0
+		or room_coord.x >= MAP_SIZE
+		or room_coord.y >= MAP_SIZE
+	):
+		return -1
+	return room_coord.y * MAP_SIZE + room_coord.x
+
+
+static func unpacked_room_coord(packed_coord: int) -> Vector2i:
+	if packed_coord < 0 or packed_coord >= MAP_SIZE * MAP_SIZE:
+		return Vector2i(-1, -1)
+	return Vector2i(
+		packed_coord % MAP_SIZE,
+		floori(float(packed_coord) / float(MAP_SIZE)),
+	)
+
+
 func room_at(room_coord: Vector2i) -> Dictionary:
 	return rooms[room_coord.y * MAP_SIZE + room_coord.x]
 
@@ -2798,6 +3323,103 @@ func _furniture_has_primary_content(furniture: Dictionary) -> bool:
 	for content_variant in furniture.get("contents", []):
 		var content: Dictionary = content_variant
 		if str(content.get("kind", "")) in ["treasure", "alarm"]:
+			return true
+	return false
+
+
+func _ensure_core_treasures_placed() -> void:
+	var requester_peer_id := _monster_peer_id()
+	var start_index := rng.randi_range(0, maxi(rooms.size() - 1, 0))
+	for treasure_index in range(GAME_STATE_BASE.TREASURES.size()):
+		var treasure: Dictionary = GAME_STATE_BASE.TREASURES[treasure_index]
+		if _treasure_is_deployed(str(treasure.get("id", ""))):
+			continue
+		var placed := false
+		for room_offset in range(rooms.size()):
+			var room: Dictionary = rooms[
+				(start_index + treasure_index * 11 + room_offset) % rooms.size()
+			]
+			if (
+				room["coord"] == ENTRANCE_ROOM
+				or _room_has_deployed_core(room)
+			):
+				continue
+			for furniture_variant in room["furniture"]:
+				var furniture: Dictionary = furniture_variant
+				if (
+					bool(furniture.get("destroyed", false))
+					or _furniture_has_primary_content(furniture)
+				):
+					continue
+				(furniture["contents"] as Array).append(treasure.duplicate(true))
+				_refresh_furniture_durability(furniture)
+				pending_world_events.append(_furniture_event(
+					requester_peer_id,
+					room["coord"],
+					furniture,
+					[],
+					"服务器已自动藏好%s。" % str(treasure.get("label", "核心藏品")),
+					"",
+				))
+				placed = true
+				break
+			if placed:
+				break
+
+
+func _monster_peer_id() -> int:
+	for peer_id_variant in actors:
+		var actor: Dictionary = actors[peer_id_variant]
+		if _role_for_slot(str(actor.get("slot", ""))) == "monster":
+			return int(peer_id_variant)
+	return 0
+
+
+func _room_has_deployed_core(room: Dictionary) -> bool:
+	for furniture_variant in room.get("furniture", []):
+		var furniture: Dictionary = furniture_variant
+		for content_variant in furniture.get("contents", []):
+			if _is_core_treasure(content_variant):
+				return true
+	for item_variant in room.get("items", []):
+		var item: Dictionary = item_variant
+		if not bool(item.get("collected", false)) and _is_core_treasure(item):
+			return true
+	return false
+
+
+func _count_extracted_core_treasures() -> int:
+	var count := 0
+	for actor_variant in actors.values():
+		var actor: Dictionary = actor_variant
+		if (
+			_role_for_slot(str(actor.get("slot", ""))) == "thief"
+			and bool(actor.get("extracted", false))
+		):
+			count += _core_count_in_loot(actor.get("extracted_loot", []))
+	return count
+
+
+func _core_count_in_loot(loot: Array) -> int:
+	var count := 0
+	for item_variant in loot:
+		if _is_core_treasure(item_variant):
+			count += 1
+	return count
+
+
+func _is_core_treasure(item_variant: Variant) -> bool:
+	if not item_variant is Dictionary:
+		return false
+	var item: Dictionary = item_variant
+	var candidate_ids := [
+		str(item.get("treasure_id", "")),
+		str(item.get("source_id", "")),
+		str(item.get("id", "")),
+	]
+	for treasure_variant in GAME_STATE_BASE.TREASURES:
+		var treasure_id := str((treasure_variant as Dictionary).get("id", ""))
+		if treasure_id in candidate_ids:
 			return true
 	return false
 
@@ -2952,3 +3574,35 @@ static func _phase_index(phase_name: String) -> int:
 		"ready": return 1
 		"hunt": return 2
 	return 3
+
+
+static func _winner_index(winning_role: String) -> int:
+	match winning_role:
+		"monster": return 1
+		"thief": return 2
+	return 0
+
+
+static func winner_from_index(index: int) -> String:
+	match index:
+		1: return "monster"
+		2: return "thief"
+	return ""
+
+
+static func _result_reason_index(reason: String) -> int:
+	match reason:
+		"core_target": return 1
+		"team_wipe": return 2
+		"time": return 3
+		"no_active_thieves": return 4
+	return 0
+
+
+static func result_reason_from_index(index: int) -> String:
+	match index:
+		1: return "core_target"
+		2: return "team_wipe"
+		3: return "time"
+		4: return "no_active_thieves"
+	return ""

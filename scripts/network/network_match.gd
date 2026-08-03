@@ -65,6 +65,7 @@ var target_actors: Dictionary = {}
 var display_actors: Dictionary = {}
 var server_inputs: Dictionary = {}
 var server_rescue_inputs: Dictionary = {}
+var server_skill_inputs: Dictionary = {}
 var last_input_sequences: Dictionary = {}
 var snapshot_accumulator := 0.0
 var input_accumulator := 0.0
@@ -74,6 +75,13 @@ var server_tick := 0
 var phase := "loading"
 var seconds_left := 0
 var match_elapsed := 0.0
+var winner := ""
+var result_reason := ""
+var extracted_core_count := 0
+var team_wipe_started_at := -1.0
+var total_extracted_value := 0
+var escaped_thief_count := 0
+var result_player_rows: Array = []
 var movement_logged: Dictionary = {}
 var snapshot_movement_logged: Dictionary = {}
 var debug_input := ""
@@ -203,6 +211,7 @@ func start_match(players: Dictionary) -> void:
 	display_actors.clear()
 	server_inputs.clear()
 	server_rescue_inputs.clear()
+	server_skill_inputs.clear()
 	last_input_sequences.clear()
 	snapshot_accumulator = 0.0
 	input_accumulator = 0.0
@@ -212,6 +221,13 @@ func start_match(players: Dictionary) -> void:
 	phase = "loading"
 	seconds_left = 0
 	match_elapsed = 0.0
+	winner = ""
+	result_reason = ""
+	extracted_core_count = 0
+	team_wipe_started_at = -1.0
+	total_extracted_value = 0
+	escaped_thief_count = 0
+	result_player_rows.clear()
 	active_storage_id = ""
 	selected_treasure = 0
 	carrying_panel_open = false
@@ -227,6 +243,7 @@ func start_match(players: Dictionary) -> void:
 	for peer_id_variant in player_snapshot:
 		server_inputs[int(peer_id_variant)] = Vector2.ZERO
 		server_rescue_inputs[int(peer_id_variant)] = false
+		server_skill_inputs[int(peer_id_variant)] = false
 	show()
 	if instructions_label:
 		instructions_label.hide()
@@ -283,11 +300,19 @@ func stop_match() -> void:
 	display_actors.clear()
 	server_inputs.clear()
 	server_rescue_inputs.clear()
+	server_skill_inputs.clear()
 	mansion_state = null
 	pending_world_seed = 0
 	pending_skip_hide = false
 	pending_combat_test = false
 	pending_tool_test = false
+	winner = ""
+	result_reason = ""
+	extracted_core_count = 0
+	team_wipe_started_at = -1.0
+	total_extracted_value = 0
+	escaped_thief_count = 0
+	result_player_rows.clear()
 	active_storage_id = ""
 	selected_treasure = 0
 	carrying_panel_open = false
@@ -318,6 +343,8 @@ func handle_input(event: InputEvent) -> bool:
 		leave_requested.emit()
 		return true
 	if not match_live:
+		return true
+	if phase == "finished":
 		return true
 	var local_actor := _local_display_actor()
 	if bool(local_actor.get("trapped", false)):
@@ -353,9 +380,12 @@ func handle_input(event: InputEvent) -> bool:
 			_request_action("end_hide")
 			return true
 		KEY_SHIFT:
-			if str(local_actor.get("profession_id", "")) == "collector":
+			if (
+				not str(local_actor.get("profession_id", "")).is_empty()
+				and str(local_actor.get("profession_id", "")) != "support"
+			):
 				_request_action("use_active_skill")
-				return true
+			return true
 		KEY_SPACE:
 			if _local_role() == "monster":
 				_request_action("attack")
@@ -486,6 +516,7 @@ func _physics_process(delta: float) -> void:
 		if player_snapshot.has(peer_id):
 			server_inputs[peer_id] = local_input
 			server_rescue_inputs[peer_id] = _read_local_rescue_input()
+			server_skill_inputs[peer_id] = _read_local_skill_input()
 	else:
 		input_accumulator += delta
 		if input_accumulator >= INPUT_INTERVAL:
@@ -495,6 +526,7 @@ func _physics_process(delta: float) -> void:
 				1,
 				local_input,
 				_read_local_rescue_input(),
+				_read_local_skill_input(),
 				local_input_sequence,
 			)
 
@@ -545,6 +577,7 @@ func _receive_world(
 func _submit_input(
 	input_vector: Vector2,
 	rescue_held: bool,
+	skill_held: bool,
 	sequence: int,
 ) -> void:
 	if (
@@ -558,6 +591,7 @@ func _submit_input(
 	var peer_id := multiplayer.get_remote_sender_id()
 	_set_server_input(peer_id, input_vector, sequence)
 	server_rescue_inputs[peer_id] = rescue_held
+	server_skill_inputs[peer_id] = skill_held
 
 
 @rpc("any_peer", "call_remote", "reliable")
@@ -800,7 +834,12 @@ func _set_server_input(peer_id: int, input_vector: Vector2, sequence: int) -> vo
 func _server_step(delta: float) -> void:
 	if not mansion_state:
 		return
-	mansion_state.step(delta, server_inputs, server_rescue_inputs)
+	mansion_state.step(
+		delta,
+		server_inputs,
+		server_rescue_inputs,
+		server_skill_inputs,
+	)
 	_flush_state_events()
 	phase = mansion_state.phase
 	seconds_left = mansion_state.seconds_left
@@ -839,6 +878,32 @@ func _apply_snapshot(snapshot: Dictionary, tick: int) -> void:
 	phase = _phase_from_index(int(snapshot.get("p", 3)))
 	seconds_left = int(snapshot.get("t", seconds_left))
 	match_elapsed = float(snapshot.get("e", match_elapsed))
+	var match_record: PackedFloat32Array = snapshot.get(
+		"m",
+		PackedFloat32Array([0.0, 0.0, 0.0, -1.0, 0.0, 0.0]),
+	)
+	winner = NETWORK_MANSION_STATE_SCRIPT.winner_from_index(
+		roundi(match_record[0]) if match_record.size() > 0 else 0,
+	)
+	result_reason = NETWORK_MANSION_STATE_SCRIPT.result_reason_from_index(
+		roundi(match_record[1]) if match_record.size() > 1 else 0,
+	)
+	extracted_core_count = (
+		roundi(match_record[2])
+		if match_record.size() > 2
+		else extracted_core_count
+	)
+	team_wipe_started_at = match_record[3] if match_record.size() > 3 else -1.0
+	total_extracted_value = (
+		roundi(match_record[4])
+		if match_record.size() > 4
+		else total_extracted_value
+	)
+	escaped_thief_count = (
+		roundi(match_record[5])
+		if match_record.size() > 5
+		else escaped_thief_count
+	)
 	if mansion_state:
 		mansion_state.apply_device_snapshot(
 			snapshot.get("d", PackedFloat32Array()),
@@ -952,6 +1017,38 @@ func _apply_snapshot(snapshot: Dictionary, tick: int) -> void:
 			"active_skill_trap_count": (
 				roundi(record[33]) if record.size() > 33 else 0
 			),
+			"scout_scan_until": (
+				record[34]
+				if (
+					record.size() > 34
+					and str(player.get("profession_id", "")) == "scout"
+				)
+				else 0.0
+			),
+			"scout_last_known_room": (
+				NETWORK_MANSION_STATE_SCRIPT.unpacked_room_coord(roundi(record[35]))
+				if record.size() > 35
+				else Vector2i(-1, -1)
+			),
+			"scout_last_known_until": (
+				record[36] if record.size() > 36 else 0.0
+			),
+			"support_heal_progress": (
+				record[37] if record.size() > 37 else 0.0
+			),
+			"hauler_sprint_until": (
+				record[34]
+				if (
+					record.size() > 34
+					and str(player.get("profession_id", "")) == "hauler"
+				)
+				else 0.0
+			),
+			"rescue_required_seconds": (
+				record[38]
+				if record.size() > 38
+				else NETWORK_MANSION_STATE_SCRIPT.REVIVE_SECONDS
+			),
 		}
 	target_actors = actors.duplicate(true)
 	if session.is_server():
@@ -965,6 +1062,8 @@ func _apply_snapshot(snapshot: Dictionary, tick: int) -> void:
 	for peer_id_variant in display_actors.keys():
 		if not target_actors.has(peer_id_variant):
 			display_actors.erase(peer_id_variant)
+	if phase == "finished" and result_player_rows.is_empty():
+		result_player_rows = _fallback_result_rows()
 	_sync_carrying_panel_state()
 	_sync_local_detector_visuals()
 	if session.is_server():
@@ -1150,6 +1249,11 @@ func _present_world_event(event: Dictionary) -> void:
 		return
 	if (
 		bool(event.get("accepted", false))
+		and str(event.get("kind", "")) == "match_result"
+	):
+		_present_match_result(event)
+	if (
+		bool(event.get("accepted", false))
 		and str(event.get("kind", "")) == "combat"
 	):
 		_present_combat_event(event)
@@ -1187,6 +1291,26 @@ func _present_world_event(event: Dictionary) -> void:
 	queue_redraw()
 
 
+func _present_match_result(event: Dictionary) -> void:
+	winner = str(event.get("winner", ""))
+	result_reason = str(event.get("reason", ""))
+	extracted_core_count = int(event.get("extracted_core_count", 0))
+	total_extracted_value = int(event.get("extracted_value", 0))
+	escaped_thief_count = int(event.get("escaped_count", 0))
+	result_player_rows = (event.get("player_results", []) as Array).duplicate(true)
+	team_wipe_started_at = -1.0
+	phase = "finished"
+	seconds_left = 0
+	active_storage_id = ""
+	carrying_panel_open = false
+	feedback_message = ""
+	feedback_seconds = 0.0
+	if leave_button:
+		leave_button.text = "返回模式选择"
+	_refresh_status()
+	queue_redraw()
+
+
 func _present_tool_event(event: Dictionary) -> void:
 	var mutation: Dictionary = event.get("actor", {})
 	if not mutation.is_empty():
@@ -1206,6 +1330,12 @@ func _present_tool_event(event: Dictionary) -> void:
 		and str(event.get("tool_action", "")) == "spring_glove"
 	):
 		feedback_message = "你被弹簧拳套击退并眩晕。"
+		feedback_seconds = 3.0
+	elif (
+		target_peer_id == local_peer_id
+		and str(event.get("skill_action", "")) == "support_first_aid"
+	):
+		feedback_message = "支援者为你完成包扎，恢复了 1 点生命。"
 		feedback_seconds = 3.0
 	queue_redraw()
 
@@ -1234,6 +1364,14 @@ func _present_tool_actor_mutation(mutation: Dictionary) -> void:
 			"carried_weight",
 			"carried_loot",
 			"active_skill_ready_at",
+			"scout_scan_until",
+			"scout_last_known_room",
+			"scout_last_known_until",
+			"support_heal_progress",
+			"support_heal_target_peer_id",
+			"medical_fatigue_until",
+			"hauler_sprint_until",
+			"hp",
 			"trapped",
 			"trapped_by",
 			"trapped_started_at",
@@ -1279,6 +1417,7 @@ func _present_combat_event(event: Dictionary) -> void:
 				"hit_reaction_direction",
 				"rescue_progress",
 				"being_revived",
+				"rescue_required_seconds",
 			]:
 				if mutation.has(key):
 					actor[key] = mutation[key]
@@ -1406,6 +1545,17 @@ func _read_local_rescue_input() -> bool:
 	)
 
 
+func _read_local_skill_input() -> bool:
+	return (
+		match_live
+		and active_storage_id.is_empty()
+		and not carrying_panel_open
+		and str(_local_display_actor().get("profession_id", "")) == "support"
+		and not bool(_local_display_actor().get("trapped", false))
+		and Input.is_key_pressed(KEY_SHIFT)
+	)
+
+
 func _on_players_changed(players: Dictionary) -> void:
 	if not active:
 		return
@@ -1418,10 +1568,13 @@ func _on_players_changed(players: Dictionary) -> void:
 				server_inputs[peer_id] = Vector2.ZERO
 			if not server_rescue_inputs.has(peer_id):
 				server_rescue_inputs[peer_id] = false
+			if not server_skill_inputs.has(peer_id):
+				server_skill_inputs[peer_id] = false
 	for peer_id_variant in server_inputs.keys():
 		if not player_snapshot.has(peer_id_variant):
 			server_inputs.erase(peer_id_variant)
 			server_rescue_inputs.erase(peer_id_variant)
+			server_skill_inputs.erase(peer_id_variant)
 			last_input_sequences.erase(peer_id_variant)
 	for peer_id_variant in resource_ready_peers.keys():
 		if not player_snapshot.has(peer_id_variant):
@@ -1497,6 +1650,10 @@ func _refresh_status() -> void:
 		phase_text,
 	]
 	detail_label.text = ""
+	if leave_button:
+		leave_button.text = (
+			"返回模式选择" if phase == "finished" else "离开对局"
+		)
 
 
 func _draw() -> void:
@@ -1517,6 +1674,7 @@ func _draw() -> void:
 		Rect2(Vector2(size.x * 0.30, 98), Vector2(size.x * 0.40, 58)),
 		Color(0.015, 0.018, 0.015, 0.76),
 	)
+	_draw_objective_status()
 	_draw_player_roster()
 	_draw_minimap()
 	_draw_noise_alert()
@@ -1525,6 +1683,139 @@ func _draw() -> void:
 	_draw_network_toolbelt()
 	_draw_carrying_panel()
 	_draw_feedback()
+	if phase == "finished":
+		_draw_match_result()
+
+
+func _draw_objective_status() -> void:
+	var objective_rect := Rect2(
+		Vector2(size.x * 0.30, 98),
+		Vector2(size.x * 0.40, 58),
+	)
+	var text := "核心藏品 %d / %d" % [
+		extracted_core_count,
+		NETWORK_MANSION_STATE_SCRIPT.THIEF_CORE_TARGET,
+	]
+	var color := MAIN_MENU_STYLE.GOLD
+	if phase == "hunt" and team_wipe_started_at >= 0.0:
+		var wipe_left := maxf(
+			NETWORK_MANSION_STATE_SCRIPT.TEAM_WIPE_SECONDS
+			- (match_elapsed - team_wipe_started_at),
+			0.0,
+		)
+		text = "全员倒地 · %.1f 秒后收藏家胜利" % wipe_left
+		color = MONSTER_COLOR
+	draw_string(
+		UI_FONT,
+		objective_rect.position + Vector2(12, 37),
+		text,
+		HORIZONTAL_ALIGNMENT_CENTER,
+		objective_rect.size.x - 24,
+		22,
+		color,
+	)
+
+
+func _draw_match_result() -> void:
+	draw_rect(Rect2(Vector2.ZERO, size), Color(0.0, 0.0, 0.0, 0.78))
+	var panel_size := Vector2(
+		minf(760.0, size.x - 70.0),
+		minf(390.0, size.y - 50.0),
+	)
+	var panel_rect := Rect2((size - panel_size) * 0.5, panel_size)
+	draw_style_box(MAIN_MENU_STYLE.panel_style(), panel_rect)
+	draw_rect(panel_rect.grow(-10.0), Color(MAIN_MENU_STYLE.GOLD, 0.42), false, 1.2)
+	var title := (
+		"盗贼阵营胜利" if winner == "thief" else "收藏家胜利"
+	)
+	draw_string(
+		UI_FONT,
+		panel_rect.position + Vector2(36, 58),
+		title,
+		HORIZONTAL_ALIGNMENT_CENTER,
+		panel_rect.size.x - 72,
+		34,
+		THIEF_COLOR if winner == "thief" else MONSTER_COLOR,
+	)
+	draw_string(
+		UI_FONT,
+		panel_rect.position + Vector2(36, 92),
+		_result_reason_text(),
+		HORIZONTAL_ALIGNMENT_CENTER,
+		panel_rect.size.x - 72,
+		18,
+		MAIN_MENU_STYLE.MUTED,
+	)
+	draw_string(
+		UI_FONT,
+		panel_rect.position + Vector2(54, 132),
+		"核心藏品 %d / %d　·　撤离总价值 %d　·　撤离人数 %d / 3"
+		% [
+			extracted_core_count,
+			GAME_STATE_BASE.TREASURES.size(),
+			total_extracted_value,
+			escaped_thief_count,
+		],
+		HORIZONTAL_ALIGNMENT_LEFT,
+		panel_rect.size.x - 108,
+		20,
+		MAIN_MENU_STYLE.TEXT,
+	)
+	var row_y := panel_rect.position.y + 170.0
+	for row_variant in result_player_rows:
+		var row: Dictionary = row_variant
+		var row_text := "%s　%s　带出价值 %d　核心藏品 %d" % [
+			str(row.get("name", "盗贼")),
+			"已撤离" if bool(row.get("escaped", false)) else "未撤离",
+			int(row.get("extracted_value", 0)),
+			int(row.get("core_count", 0)),
+		]
+		draw_string(
+			UI_FONT,
+			Vector2(panel_rect.position.x + 58, row_y),
+			row_text,
+			HORIZONTAL_ALIGNMENT_LEFT,
+			minf(panel_rect.size.x - 360.0, 420.0),
+			18,
+			MAIN_MENU_STYLE.TEXT
+			if bool(row.get("escaped", false))
+			else MAIN_MENU_STYLE.MUTED,
+		)
+		row_y += 34.0
+
+
+func _result_reason_text() -> String:
+	match result_reason:
+		"core_target":
+			return "盗贼成功带出两件核心藏品。"
+		"team_wipe":
+			return "剩余盗贼全员倒地超过 8 秒。"
+		"time":
+			return "狩猎时间耗尽，核心藏品目标未完成。"
+		"no_active_thieves":
+			return "已无盗贼能够继续完成核心藏品目标。"
+	return "本局已经结束。"
+
+
+func _fallback_result_rows() -> Array:
+	var rows: Array = []
+	for peer_id_variant in target_actors:
+		var peer_id := int(peer_id_variant)
+		var actor: Dictionary = target_actors[peer_id_variant]
+		if not str(actor.get("slot", "")).begins_with("thief"):
+			continue
+		rows.append({
+			"peer_id": peer_id,
+			"slot": str(actor.get("slot", "")),
+			"name": str(actor.get("name", "盗贼")),
+			"escaped": bool(actor.get("extracted", false)),
+			"extracted_value": int(actor.get("extracted_value", 0)),
+			"core_count": 0,
+		})
+	rows.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		return str(a.get("slot", "")) < str(b.get("slot", ""))
+	)
+	return rows
 
 
 func _draw_loading_screen() -> void:
@@ -1857,9 +2148,10 @@ func _draw_carry_status() -> void:
 	var actor := _local_display_actor()
 	if actor.is_empty():
 		return
+	var status_height := 76.0 if _local_role() == "monster" else 102.0
 	var status_rect := Rect2(
-		Vector2(110, size.y - 288),
-		Vector2(420, 76),
+		Vector2(110, size.y - 288 - (status_height - 76.0)),
+		Vector2(420, status_height),
 	)
 	draw_style_box(MAIN_MENU_STYLE.panel_style(), status_rect)
 	if _local_role() == "monster":
@@ -1945,6 +2237,61 @@ func _draw_carry_status() -> void:
 			17,
 			MAIN_MENU_STYLE.MUTED,
 		)
+		var skill_status := _thief_skill_status(actor)
+		draw_string(
+			UI_FONT,
+			status_rect.position + Vector2(18, 87),
+			skill_status,
+			HORIZONTAL_ALIGNMENT_LEFT,
+			status_rect.size.x - 36,
+			17,
+			MAIN_MENU_STYLE.GOLD
+			if float(actor.get("active_skill_ready_at", 0.0)) <= match_elapsed
+			else MAIN_MENU_STYLE.MUTED,
+		)
+
+
+func _thief_skill_status(actor: Dictionary) -> String:
+	var profession_id := str(actor.get("profession_id", ""))
+	var cooldown := maxf(
+		float(actor.get("active_skill_ready_at", 0.0)) - match_elapsed,
+		0.0,
+	)
+	match profession_id:
+		"scout":
+			var active_seconds := maxf(
+				float(actor.get("scout_scan_until", 0.0)) - match_elapsed,
+				0.0,
+			)
+			if active_seconds > 0.0:
+				return "Shift 回声勘察 · 扫描 %.1f 秒" % active_seconds
+			return (
+				"Shift 回声勘察 · 冷却 %.1f 秒" % cooldown
+				if cooldown > 0.0
+				else "Shift 回声勘察 · 可以使用"
+			)
+		"support":
+			var progress := float(actor.get("support_heal_progress", 0.0))
+			if progress > 0.0:
+				return "按住 Shift 包扎 · %.1f / 1.2 秒" % progress
+			return (
+				"按住 Shift 包扎 · 冷却 %.1f 秒" % cooldown
+				if cooldown > 0.0
+				else "按住 Shift 为附近受伤队友包扎"
+			)
+		"hauler":
+			var sprint_seconds := maxf(
+				float(actor.get("hauler_sprint_until", 0.0)) - match_elapsed,
+				0.0,
+			)
+			if sprint_seconds > 0.0:
+				return "Shift 卸重疾行 · 剩余 %.1f 秒" % sprint_seconds
+			return (
+				"Shift 卸重疾行 · 冷却 %.1f 秒" % cooldown
+				if cooldown > 0.0
+				else "Shift 卸重疾行 · 可以使用"
+			)
+	return "当前职业尚无主动技能"
 
 
 func _draw_carrying_panel() -> void:
@@ -2203,7 +2550,13 @@ func _draw_player_roster() -> void:
 				"　倒地 %.0f%%"
 				% (
 					float(actor.get("rescue_progress", 0.0))
-					/ NETWORK_MANSION_STATE_SCRIPT.REVIVE_SECONDS
+					/ maxf(
+						float(actor.get(
+							"rescue_required_seconds",
+							NETWORK_MANSION_STATE_SCRIPT.REVIVE_SECONDS,
+						)),
+						0.01,
+					)
 					* 100.0
 				)
 				if bool(actor.get("downed", false))
@@ -2247,6 +2600,7 @@ func _draw_minimap() -> void:
 		)
 		draw_rect(cell, Color("#242820"))
 		draw_rect(cell, Color("#5a594b"), false, 1.5)
+	_draw_scout_scan_markers(map_rect, cell_size)
 	for peer_id_variant in display_actors:
 		var actor: Dictionary = display_actors[peer_id_variant]
 		if bool(actor.get("extracted", false)):
@@ -2270,7 +2624,7 @@ func _draw_minimap() -> void:
 			map_rect.position
 			+ (Vector2(coord) + Vector2(0.5, 0.5)) * cell_size
 		)
-		var duration := maxf(float(noise.get("duration", 2.0)), 0.01)
+		var duration := _noise_visual_duration(noise)
 		var age := maxf(match_elapsed - float(noise.get("created", match_elapsed)), 0.0)
 		var progress := clampf(age / duration, 0.0, 1.0)
 		var fade := 1.0 - progress
@@ -2288,6 +2642,95 @@ func _draw_minimap() -> void:
 			24,
 			Color(color, 0.92 * fade),
 			2.0,
+		)
+
+
+func _draw_scout_scan_markers(map_rect: Rect2, cell_size: float) -> void:
+	var local_actor := _local_display_actor()
+	if (
+		str(local_actor.get("profession_id", "")) != "scout"
+		or match_elapsed >= float(local_actor.get("scout_scan_until", 0.0))
+	):
+		return
+	var local_room: Vector2i = local_actor.get("room", Vector2i(-10, -10))
+	for room_variant in mansion_state.rooms:
+		var room: Dictionary = room_variant
+		var coord: Vector2i = room["coord"]
+		var distance := (
+			absi(coord.x - local_room.x)
+			+ absi(coord.y - local_room.y)
+		)
+		if distance > 1:
+			continue
+		var center := (
+			map_rect.position
+			+ (Vector2(coord) + Vector2(0.5, 0.5)) * cell_size
+		)
+		var has_unopened := false
+		var has_damaged := false
+		for furniture_variant in room.get("furniture", []):
+			var furniture: Dictionary = furniture_variant
+			has_unopened = (
+				has_unopened
+				or not bool(furniture.get("opened", false))
+			)
+			has_damaged = (
+				has_damaged
+				or int(furniture.get("damage", 0)) > 0
+			)
+		if has_unopened:
+			draw_circle(center + Vector2(-7, 7), 3.5, Color("#d7b264"))
+		if has_damaged:
+			draw_rect(
+				Rect2(center + Vector2(3, 3), Vector2(7, 7)),
+				Color("#e68a55"),
+				false,
+				2.0,
+			)
+		var has_hostile_device := false
+		for item_variant in room.get("items", []):
+			var item: Dictionary = item_variant
+			if (
+				not bool(item.get("collected", false))
+				and str(item.get("kind", "")) == "device"
+				and str(item.get("owner", "")) == "monster"
+			):
+				has_hostile_device = true
+				break
+		if has_hostile_device:
+			draw_line(
+				center + Vector2(-5, -5),
+				center + Vector2(5, 5),
+				Color("#e85f52"),
+				2.5,
+			)
+			draw_line(
+				center + Vector2(5, -5),
+				center + Vector2(-5, 5),
+				Color("#e85f52"),
+				2.5,
+			)
+	var last_known_room: Vector2i = local_actor.get(
+		"scout_last_known_room",
+		Vector2i(-1, -1),
+	)
+	if (
+		match_elapsed < float(local_actor.get("scout_last_known_until", 0.0))
+		and last_known_room.x >= 0
+		and last_known_room.y >= 0
+	):
+		var last_known_center := (
+			map_rect.position
+			+ (Vector2(last_known_room) + Vector2(0.5, 0.5)) * cell_size
+		)
+		draw_arc(
+			last_known_center,
+			10.0,
+			0.0,
+			TAU,
+			24,
+			Color("#e85f52"),
+			2.5,
 		)
 
 
@@ -2317,10 +2760,10 @@ func _draw_noise_waves() -> void:
 			if str(noise.get("source_role", "")) == "monster"
 			else Color("#e0ba63")
 		)
-		var duration := maxf(float(noise.get("duration", 2.0)), 0.01)
+		var duration := _noise_visual_duration(noise)
 		var age := maxf(match_elapsed - float(noise.get("created", match_elapsed)), 0.0)
 		var life_fade := clampf(
-			(float(noise.get("expires", match_elapsed)) - match_elapsed) / duration,
+			(_noise_visual_expires(noise) - match_elapsed) / duration,
 			0.0,
 			1.0,
 		)
@@ -2379,6 +2822,12 @@ func _draw_noise_alert() -> void:
 	var room_delta := noise_room - local_room
 	var distance: int = absi(room_delta.x) + absi(room_delta.y)
 	var direction := _noise_direction_label(room_delta)
+	var distance_label := "距离 %d 个房间" % distance
+	if str(local_actor.get("profession_id", "")) == "scout":
+		distance_label = "敏锐听觉：%s（%d 个房间）" % [
+			"同房" if distance == 0 else "邻近" if distance == 1 else "较远",
+			distance,
+		]
 	var alert_rect := Rect2(Vector2(110, 365), Vector2(430, 68))
 	draw_style_box(MAIN_MENU_STYLE.panel_style(), alert_rect)
 	draw_string(
@@ -2393,9 +2842,9 @@ func _draw_noise_alert() -> void:
 	draw_string(
 		UI_FONT,
 		alert_rect.position + Vector2(18, 53),
-		"%s · 距离 %d 个房间 · %s" % [
+		"%s · %s · %s" % [
 			direction,
-			distance,
+			distance_label,
 			"制造者未知" if _local_role() == "monster" else "怪物动静",
 		],
 		HORIZONTAL_ALIGNMENT_LEFT,
@@ -2414,9 +2863,14 @@ func _visible_noises() -> Array:
 		return result
 	var local_role := _local_role()
 	var local_room: Vector2i = local_actor["room"]
+	var scout_listener := str(local_actor.get("profession_id", "")) == "scout"
 	for noise_variant in mansion_state.noises:
 		var noise: Dictionary = noise_variant
-		if match_elapsed >= float(noise.get("expires", 0.0)):
+		var expires := float(noise.get(
+			"scout_expires" if scout_listener else "expires",
+			noise.get("expires", 0.0),
+		))
+		if match_elapsed >= expires:
 			continue
 		if str(noise.get("source_role", "")) == local_role:
 			continue
@@ -2429,6 +2883,23 @@ func _visible_noises() -> Array:
 			continue
 		result.append(noise)
 	return result
+
+
+func _noise_visual_expires(noise: Dictionary) -> float:
+	var local_actor := _local_display_actor()
+	var scout_listener := str(local_actor.get("profession_id", "")) == "scout"
+	return float(noise.get(
+		"scout_expires" if scout_listener else "expires",
+		noise.get("expires", match_elapsed),
+	))
+
+
+func _noise_visual_duration(noise: Dictionary) -> float:
+	return maxf(
+		_noise_visual_expires(noise)
+		- float(noise.get("created", match_elapsed)),
+		0.01,
+	)
 
 
 func _actor_visible_on_local_minimap(peer_id: int, actor: Dictionary) -> bool:
@@ -2473,6 +2944,7 @@ func _phase_label() -> String:
 		"hide": return "藏宝 %d:%02d" % [minutes, remainder]
 		"ready": return "狩猎倒计时 %d" % seconds_left
 		"hunt": return "狩猎 %d:%02d" % [minutes, remainder]
+		"finished": return "比赛结束"
 	return phase
 
 
@@ -2481,6 +2953,7 @@ func _phase_from_index(index: int) -> String:
 		0: return "hide"
 		1: return "ready"
 		2: return "hunt"
+		3: return "finished"
 	return phase
 
 
